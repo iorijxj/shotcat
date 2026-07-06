@@ -57,6 +57,17 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化，关闭时清理。"""
     # 启动时：供应商注册 + 任务执行器注册（幂等）
     bootstrap_all_registries()
+    # 确保对象存储 bucket 存在（幂等）；存储暂不可用不应阻塞应用启动
+    try:
+        from anyio import to_thread
+
+        from app.core.storage import init_storage
+
+        await to_thread.run_sync(init_storage)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).warning("对象存储初始化失败（bucket 可能需要手建）: %s", exc)
     yield
     # 关闭时：清理资源
     pass

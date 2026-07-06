@@ -18,6 +18,11 @@ def _build_engine() -> AsyncEngine:
         settings.database_url,
         echo=settings.debug,
         future=True,
+        # MySQL wait_timeout（默认 8h）会踢掉空闲连接，池里的死连接会导致
+        # "Lost connection to MySQL server during query"；pre_ping 取用前探活，
+        # recycle 提前主动换连接兜底
+        pool_pre_ping=True,
+        pool_recycle=3600,
     )
 
 
