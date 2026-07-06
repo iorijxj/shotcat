@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse, json, urllib.error, urllib.request
 from pathlib import Path
 from glm import chat_json
+from http_util import get_all
 
 SYS = """你是微短剧AI视频制作的"视觉词典"专家。通读完整剧本，为给定的角色/场景/物件产出【可直接复制粘贴、供每次AIGC生成复用】的锁定描述。
 
@@ -59,8 +60,7 @@ def _req(method, path, body=None, timeout=30):
 
 
 def get_items(path):
-    _, j = _req("GET", path)
-    return (j.get("data") or {}).get("items", [])
+    return get_all(BASE, path)
 
 
 def patch_desc(entity_type, eid, description):
@@ -94,42 +94,67 @@ def run(pid: str, model: str):
     vc, vs, vp = by(vd.get("characters", [])), by(vd.get("scenes", [])), by(vd.get("props", []))
 
     print("  回填造型库：")
+    ok = fail = miss = 0
     for c in chars:
         d = vc.get(c["name"])
         if not d:
+            print(f"    ! [角色] {c['name']} 在词典中无同名项(GLM 改写了名称?)，跳过回填")
+            miss += 1
             continue
         # 造型图依据：description 只放【外貌锁定】(纯视觉)；表演基线(性格/情绪/声音)留在词典 JSON 供视听单元/视频用，不进生图 prompt
         desc = d.get("appearance_lock", "")
-        patch_desc("character", c["id"], desc)
-        print(f"    [角色] {c['name']} ← 外貌锁定({len(desc)}字，表演基线不入生图)")
+        if patch_desc("character", c["id"], desc):
+            ok += 1
+            print(f"    [角色] {c['name']} ← 外貌锁定({len(desc)}字，表演基线不入生图)")
+        else:
+            fail += 1
+            print(f"    ✗ [角色] {c['name']} 外貌锁定回填失败(HTTP≥400)")
         # 该角色默认服装
         cid = c.get("costume_id")
         if cid and d.get("costume"):
-            patch_desc("costume", cid, d["costume"])
-            print(f"      服装 {cid} ← 服装档案")
+            if patch_desc("costume", cid, d["costume"]):
+                ok += 1
+                print(f"      服装 {cid} ← 服装档案")
+            else:
+                fail += 1
+                print(f"      ✗ 服装 {cid} 回填失败(HTTP≥400)")
     for s in scenes:
         d = vs.get(s["name"])
         if not d:
+            print(f"    ! [场景] {s['name']} 在词典中无同名项(GLM 改写了名称?)，跳过回填")
+            miss += 1
             continue
         desc = d.get("space_lock", "")
         if d.get("lighting"):
             desc += "\n\n【光照】" + d["lighting"]
-        patch_desc("scene", s["id"], desc)
-        print(f"    [场景] {s['name']} ← 空间+光照锁定({len(desc)}字)")
+        if patch_desc("scene", s["id"], desc):
+            ok += 1
+            print(f"    [场景] {s['name']} ← 空间+光照锁定({len(desc)}字)")
+        else:
+            fail += 1
+            print(f"    ✗ [场景] {s['name']} 回填失败(HTTP≥400)")
     for p in props:
         d = vp.get(p["name"])
         if not d:
+            print(f"    ! [物件] {p['name']} 在词典中无同名项(GLM 改写了名称?)，跳过回填")
+            miss += 1
             continue
         desc = d.get("appearance_lock", "")
         if d.get("function"):
             desc += "\n\n【叙事功能】" + d["function"]
-        patch_desc("prop", p["id"], desc)
-        print(f"    [物件] {p['name']} ← 外观锁定({len(desc)}字)")
+        if patch_desc("prop", p["id"], desc):
+            ok += 1
+            print(f"    [物件] {p['name']} ← 外观锁定({len(desc)}字)")
+        else:
+            fail += 1
+            print(f"    ✗ [物件] {p['name']} 回填失败(HTTP≥400)")
 
-    print(f"\n=== 完成 ===")
+    print(f"\n=== 完成：回填成功 {ok}｜失败 {fail}｜名称未匹配跳过 {miss} ===")
     print(f"风格声明：{vd.get('style_statement', '')}")
     print(f"年代感：{vd.get('era_note', '(未提取)')}")
     print(f"完整词典已存：bridge/visual-dict-{pid}.json（供第二阶段视听单元复用）")
+    if fail:
+        raise SystemExit(f"✗ 有 {fail} 项回填失败，请检查后端/实体 id 后重跑")
 
 
 if __name__ == "__main__":

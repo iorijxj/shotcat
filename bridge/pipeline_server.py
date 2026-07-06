@@ -22,21 +22,29 @@ JOBS: dict[str, dict] = {}
 LOCK = threading.Lock()  # 作业串行，避免并发 stdout 冲突
 
 
+class _JobLog(io.TextIOBase):
+    """把 stdout 增量追加进 job['log']，运行中即可通过 GET 轮询查看。"""
+
+    def __init__(self, job: dict):
+        self.job = job
+
+    def write(self, s):
+        self.job["log"] += s
+        return len(s)
+
+
 def _run(job_id: str, step: str, pid: str, model: str):
     with LOCK:
         job = JOBS[job_id]
         job["status"] = "running"
-        buf = io.StringIO()
         try:
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(_JobLog(job)):
                 STEPS[step](pid, model)
             job["status"] = "done"
         except SystemExit as e:
             job["status"] = "error"; job["error"] = str(e)
         except Exception as e:  # noqa: BLE001
             job["status"] = "error"; job["error"] = f"{type(e).__name__}: {e}"
-        finally:
-            job["log"] = buf.getvalue()
 
 
 class H(BaseHTTPRequestHandler):
@@ -67,7 +75,10 @@ class H(BaseHTTPRequestHandler):
         if step not in STEPS:
             return self._send(400, {"error": f"unknown step {step}"})
         length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length) or "{}") if length else {}
+        try:
+            body = json.loads(self.rfile.read(length) or "{}") if length else {}
+        except (json.JSONDecodeError, ValueError):
+            return self._send(400, {"error": "invalid JSON body"})
         pid = body.get("pid")
         if not pid:
             return self._send(400, {"error": "pid required"})
@@ -82,5 +93,5 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("pipeline server on http://localhost:5280  (steps: %s)" % ", ".join(STEPS))
-    ThreadingHTTPServer(("0.0.0.0", 5280), H).serve_forever()
+    print("pipeline server on http://127.0.0.1:5280  (steps: %s)" % ", ".join(STEPS))
+    ThreadingHTTPServer(("127.0.0.1", 5280), H).serve_forever()

@@ -1,5 +1,6 @@
 import json,urllib.request,urllib.error,time
 from pathlib import Path
+from http_util import get_all
 B="http://localhost:8000/api/v1"
 def call(m,p,b=None,t=40):
     data=json.dumps(b).encode() if b is not None else None
@@ -9,7 +10,7 @@ def call(m,p,b=None,t=40):
     except urllib.error.HTTPError as e:
         try:return e.code,json.loads(e.read().decode() or "{}")
         except:return e.code,{}
-def items(p):return (call("GET",p)[1].get("data") or {}).get("items",[])
+def items(p):return get_all(B,p)
 pid="proj_echo"
 dbshots=sorted(items(f"/studio/shots?chapter_id=proj_echo_ch01&page_size=100"),key=lambda s:s.get("index",0))
 js=json.load(open(Path(__file__).with_name(f"shots-{pid}.json"),encoding="utf-8")).get("shots",[])

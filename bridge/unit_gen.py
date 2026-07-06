@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse, json, urllib.error, urllib.request
 from pathlib import Path
 from glm import chat_json
+from http_util import get_all
 
 SYS = """你是微短剧AI视频制作的"视听单元"专家。为【一个镜头】产出可直接喂给图像/图生视频模型的自足视听描述。
 
@@ -53,8 +54,7 @@ def _req(method, path, body=None, timeout=30):
 
 
 def items(path):
-    _, j = _req("GET", path)
-    return (j.get("data") or {}).get("items", [])
+    return get_all(BASE, path)
 
 
 def brief(arr, keys):

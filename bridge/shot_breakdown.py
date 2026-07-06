@@ -6,9 +6,10 @@
 （会替换该项目章节内的现有镜头，先用 clear_shots 清旧镜头再跑）
 """
 from __future__ import annotations
-import argparse, json, time, urllib.error, urllib.request
+import argparse, json, re, time, urllib.error, urllib.request
 from pathlib import Path
 from glm import chat_json
+from http_util import get_all
 
 SHOTS = "ECU 大特写 / CU 特写 / MCU 中近景 / MS 中景 / MLS 中远景 / LS 远景 / ELS 大远景"
 ANGLES = "EYE_LEVEL 平视 / HIGH_ANGLE 俯 / LOW_ANGLE 仰 / BIRD_EYE 鸟瞰 / DUTCH 荷兰式 / OVER_SHOULDER 过肩"
@@ -55,6 +56,16 @@ def _norm(v, valid, default):
     return v if v in valid else default
 
 
+def _duration(v):
+    """容错解析建议秒数：提取前导数字(如 '6秒' → 6)，缺省 5，夹到 1-60。"""
+    if isinstance(v, (int, float)):
+        n = int(v)
+    else:
+        m = re.match(r"\s*(\d+)", str(v or ""))
+        n = int(m.group(1)) if m else 5
+    return max(1, min(60, n))
+
+
 def _req(method, path, body=None, timeout=30):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(BASE + path, data=data,
@@ -70,8 +81,7 @@ def _req(method, path, body=None, timeout=30):
 
 
 def items(path):
-    _, j = _req("GET", path)
-    return (j.get("data") or {}).get("items", [])
+    return get_all(BASE, path)
 
 
 def run(pid: str, model: str):
@@ -85,14 +95,6 @@ def run(pid: str, model: str):
     scene_id_by_name = {s["name"]: s["id"] for s in scenes}
     char_id_by_name = {c["name"]: c["id"] for c in chars}
 
-    # 清掉该章节现有镜头(可重跑)：先删 detail 再删 shot
-    old = items(f"/studio/shots?chapter_id={ch['id']}&page_size=100")
-    for o in old:
-        _req("DELETE", f"/studio/shot-details/{o['id']}")
-        _req("DELETE", f"/studio/shots/{o['id']}")
-    if old:
-        print(f"  已清除旧镜头 {len(old)} 个")
-
     print(f"[镜头级分镜] 项目 {pid}｜章节 {ch['id']}｜场景 {len(scenes)}｜模型 {model}")
     print("  GLM 拆镜头中…")
     data = chat_json(SYS, USER_TMPL.format(
@@ -104,6 +106,25 @@ def run(pid: str, model: str):
     Path(__file__).with_name(f"shots-{pid}.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  GLM 产出 {len(shots)} 个镜头（原场景数 {len(scenes)}）")
+
+    # 先完整校验整份镜头表，全部通过才动数据库（避免删了旧镜头却建不出新的、留下空章节）
+    for i, s in enumerate(shots, 1):
+        if not (s.get("title") or "").strip() or not (s.get("action") or "").strip():
+            raise SystemExit(f"镜{i} 缺必填字段(title/action)，中止（未改动数据库）")
+
+    # 校验通过后再清该章节现有镜头(可重跑)：先删 detail 再删 shot；任一失败即中止，不谎报已清除
+    old = items(f"/studio/shots?chapter_id={ch['id']}")
+    for o in old:
+        cd, _ = _req("DELETE", f"/studio/shot-details/{o['id']}")
+        if cd >= 400 and cd != 404:
+            raise SystemExit(f"删除旧镜头详情 {o['id']} 失败(HTTP {cd})，中止以免新旧数据混杂")
+        cs, _ = _req("DELETE", f"/studio/shots/{o['id']}")
+        if cs >= 400 and cs != 404:
+            raise SystemExit(f"删除旧镜头 {o['id']} 失败(HTTP {cs})，中止以免新旧数据混杂")
+    if old:
+        print(f"  已清除旧镜头 {len(old)} 个")
+    # 注：后端 shot-character-links 无 DELETE 接口(仅 GET/POST-upsert)，旧镜头的角色关联
+    # 依赖删 shot 时的级联清理；新镜头 id 与旧镜头按 index 复用同名，POST 为 upsert 会覆盖。
 
     ok_shot = ok_detail = 0
     for i, s in enumerate(shots, 1):
@@ -120,7 +141,7 @@ def run(pid: str, model: str):
             "camera_shot": _norm(s.get("camera_shot"), VALID_SHOT, "MS"),
             "angle": _norm(s.get("angle"), VALID_ANGLE, "EYE_LEVEL"),
             "movement": _norm(s.get("movement"), VALID_MOVE, "STATIC"),
-            "duration": int(s.get("duration") or 5),
+            "duration": _duration(s.get("duration")),
             "action_beats": [b for b in [s.get("action"), s.get("dialogue")] if b],
         }
         sid_scene = scene_id_by_name.get(s.get("scene", ""))

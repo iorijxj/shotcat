@@ -4,8 +4,9 @@
 用法：python extract_setup.py <project_id> [--model glm-4.6]
 """
 from __future__ import annotations
-import argparse, json, urllib.error, urllib.request
+import argparse, json, re, time, urllib.error, urllib.request
 from glm import chat_json
+from http_util import get_all
 
 SYS = """你是剧本设定抽取专家。通读完整剧本，抽取：
 - 角色：所有有台词或明确动作的人物。
@@ -41,7 +42,7 @@ def _req(m, p, b=None, t=40):
 
 
 def items(p):
-    return (_req("GET", p)[1].get("data") or {}).get("items", [])
+    return get_all(BASE, p)
 
 
 def create_idem(path, body):
@@ -59,6 +60,7 @@ def wait_get(path, tries=30):
     for _ in range(tries):
         if _req("GET", path)[0] == 200:
             return
+        time.sleep(0.5)
     raise SystemExit(f"依赖未就绪 {path}")
 
 
@@ -83,18 +85,40 @@ def run(pid: str, model: str):
             "style": style, "visual_style": visual, "project_id": pid,
         })
 
+    # 重跑稳定性：先拉现有实体建 名称→id 映射，原名命中就复用旧 id；
+    # 新 id 从现有最大序号之后接着分配，避免 GLM 枚举顺序变动导致 id 漂移/撞号。
+    def alloc(etype, kw):
+        existing = items(f"/studio/entities/{etype}?project_id={pid}&page_size=100")
+        name2id = {e["name"]: e["id"] for e in existing}
+        pat = re.compile(rf"^{re.escape(pid)}__{re.escape(kw)}_(\d+)$")
+        mx = max((int(m.group(1)) for e in existing for m in [pat.match(e.get("id", ""))] if m), default=0)
+        return name2id, mx
+
+    def next_id(state, kw):
+        state[1] += 1
+        return pfx(f"{kw}_{state[1]:03d}")
+
     sc = data.get("scenes", []); pr = data.get("props", []); ch = data.get("characters", [])
-    for i, s in enumerate(sc, 1):
-        asset("scene", pfx(f"scene_{i:03d}"), s["name"], s.get("description", ""))
-    for i, p in enumerate(pr, 1):
-        asset("prop", pfx(f"prop_{i:03d}"), p["name"], p.get("description", ""))
-    for i, c in enumerate(ch, 1):
+    sc_n2i, sc_mx = alloc("scene", "scene"); sc_state = [sc_n2i, sc_mx]
+    pr_n2i, pr_mx = alloc("prop", "prop"); pr_state = [pr_n2i, pr_mx]
+    ch_n2i, ch_mx = alloc("character", "char"); ch_state = [ch_n2i, ch_mx]
+    cos_n2i, cos_mx = alloc("costume", "cos"); cos_state = [cos_n2i, cos_mx]
+
+    for s in sc:
+        eid = sc_state[0].get(s["name"]) or next_id(sc_state, "scene")
+        asset("scene", eid, s["name"], s.get("description", ""))
+    for p in pr:
+        eid = pr_state[0].get(p["name"]) or next_id(pr_state, "prop")
+        asset("prop", eid, p["name"], p.get("description", ""))
+    for c in ch:
         costume_id = None
         if c.get("default_costume"):
-            costume_id = pfx(f"cos_{i:03d}")
-            asset("costume", costume_id, f"{c['name']}-默认服装", c["default_costume"])
+            cos_name = f"{c['name']}-默认服装"
+            costume_id = cos_state[0].get(cos_name) or next_id(cos_state, "cos")
+            asset("costume", costume_id, cos_name, c["default_costume"])
             wait_get(f"/studio/entities/costume/{costume_id}")
-        body = {"id": pfx(f"char_{i:03d}"), "name": c["name"], "description": c.get("appearance", ""),
+        char_id = ch_state[0].get(c["name"]) or next_id(ch_state, "char")
+        body = {"id": char_id, "name": c["name"], "description": c.get("appearance", ""),
                 "style": style, "visual_style": visual, "project_id": pid}
         if costume_id:
             body["costume_id"] = costume_id
