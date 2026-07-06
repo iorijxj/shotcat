@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, fileUrl, type Chapter, type Entity, type FrameType, type Project, type Shot } from '../lib/api'
 import Lightbox from '../Lightbox'
@@ -25,30 +25,41 @@ export default function Frames({ project }: { project: Project | null }) {
   const [lb, setLb] = useState<string | null>(null)
   const [detail, setDetail] = useState<any>(null) // 镜头详情(含真实首/关/尾帧提示词)
 
+  // 当前选中镜头 id 的实时引用：异步链回写前用它校验镜头未被切走
+  const selRef = useRef<string | null>(null)
+  useEffect(() => { selRef.current = sel?.id ?? null }, [sel])
+  // 卸载时置位，正在轮询的任务据此停止
+  const cancelledRef = useRef(false)
+  useEffect(() => () => { cancelledRef.current = true }, [])
+
   useEffect(() => {
     if (!project) return
     api.entities('character', project.id).then(setCast).catch(() => {})
     api.entities('scene', project.id).then(setScenes).catch(() => {})
     api.chapters(project.id).then((cs) => {
       setChapters(cs)
-      const first = cs[0]
-      if (first)
-        Promise.all([api.shots(first.id), api.shotDetails().catch(() => ({}))]).then(([s, details]) => {
-          const merged = s.map((x) => {
-            const d = (details as Record<string, any>)[x.id]
-            return d ? { ...x, camera_shot: d.camera_shot, duration: d.duration } : x
-          })
-          setShots(merged)
-          const want = params.get('shot')
-          setSel(merged.find((x) => x.id === want) ?? merged[0] ?? null)
+      if (!cs.length) return
+      // 载入全部章节的镜头（深链 ?shot= 可能指向第 2 集及以后的镜头）
+      Promise.all([
+        Promise.all(cs.map((c) => api.shots(c.id).catch(() => []))),
+        api.shotDetails().catch(() => ({})),
+      ]).then(([perCh, details]) => {
+        const merged = perCh.flat().map((x) => {
+          const d = (details as Record<string, any>)[x.id]
+          return d ? { ...x, camera_shot: d.camera_shot, duration: d.duration } : x
         })
-    })
-  }, [project])
+        setShots(merged)
+        const want = params.get('shot')
+        setSel(merged.find((x) => x.id === want) ?? merged[0] ?? null)
+      })
+    }).catch(() => {})
+  }, [project?.id, params])
 
   // 选中镜头 → 载入已有帧图
   const loadFrames = useCallback((shotId: string) => {
     setFrames({ first: emptyFrame(), key: emptyFrame(), last: emptyFrame() })
     api.frameImages(shotId).then((imgs) => {
+      if (selRef.current !== shotId) return // 已切换镜头，丢弃过期响应
       setFrames((prev) => {
         const next = { ...prev }
         for (const im of imgs) {
@@ -60,10 +71,10 @@ export default function Frames({ project }: { project: Project | null }) {
   }, [])
 
   useEffect(() => {
-    if (sel) {
-      loadFrames(sel.id)
-      api.shotDetail(sel.id).then(setDetail)
-    }
+    if (!sel) return
+    const shotId = sel.id
+    loadFrames(shotId)
+    api.shotDetail(shotId).then((d) => { if (selRef.current === shotId) setDetail(d) })
   }, [sel, loadFrames])
 
   const setFrame = (ft: FrameType, patch: Partial<FrameState>) =>
@@ -71,13 +82,18 @@ export default function Frames({ project }: { project: Project | null }) {
 
   async function generate(ft: FrameType) {
     if (!sel) return
+    if (frames[ft].busy) return // 该帧正在生成，防重入
+    const shotId = sel.id
+    const shot = sel
+    const alive = () => selRef.current === shotId // 镜头未被切走才回写 UI
+    const cancelled = () => cancelledRef.current
     setFrame(ft, { busy: true, error: '', stage: '生成提示词…' })
     try {
       // 1) 基础提示词（失败/空则退回剧本摘录构造）
       let prompt = ''
       try {
-        const ptask = await api.createFramePromptTask(sel.id, ft)
-        const ps = await api.pollTask(ptask)
+        const ptask = await api.createFramePromptTask(shotId, ft)
+        const ps = await api.pollTask(ptask, undefined, 60, cancelled)
         if (ps.status === 'succeeded') {
           const r = await api.taskResult(ptask)
           prompt = (r.result?.prompt || '').trim()
@@ -86,29 +102,31 @@ export default function Frames({ project }: { project: Project | null }) {
         /* 降级到摘录 */
       }
       if (!prompt) {
-        prompt = [sel.camera_shot, sel.title, sel.script_excerpt].filter(Boolean).join('，').slice(0, 300)
+        prompt = [shot.camera_shot, shot.title, shot.script_excerpt].filter(Boolean).join('，').slice(0, 300)
       }
       if (!prompt) throw new Error('无可用提示词（该镜头缺少剧本摘录）')
 
       // 2) 生成图（target_ratio 必填；503=无图像模型 会在此同步抛出）
-      setFrame(ft, { stage: '生成画面…' })
+      if (alive()) setFrame(ft, { stage: '生成画面…' })
       const ratio = project?.default_video_ratio || '16:9'
-      const itask = await api.createFrameImageTask(sel.id, ft, prompt, ratio)
-      const is = await api.pollTask(itask, (p) => setFrame(ft, { stage: `生成画面… ${p}%` }))
+      const itask = await api.createFrameImageTask(shotId, ft, prompt, ratio)
+      const is = await api.pollTask(itask, (p) => { if (alive()) setFrame(ft, { stage: `生成画面… ${p}%` }) }, 60, cancelled)
       if (is.status !== 'succeeded') {
         const r = await api.taskResult(itask).catch(() => null)
         throw new Error(r?.error || `生成${is.status === 'cancelled' ? '已取消' : '失败'}`)
       }
 
       // 3) 取回图片（占位行 file_id 可能为 null → 视为失败）
-      const imgs = await api.frameImages(sel.id)
+      const imgs = await api.frameImages(shotId)
       const hit = imgs.find((im) => im.frame_type === ft)
       if (!hit?.file_id) throw new Error('任务完成但未返回图片（模型未产出）')
+      // 镜头已切走：结果已落库，下次选回该镜头 loadFrames 会取到；此处不再回写 UI
+      if (!alive()) return
       setFrame(ft, { busy: false, stage: '', fileId: hit.file_id })
-      api.shotDetail(sel.id).then(setDetail) // 刷新真实帧提示词
+      api.shotDetail(shotId).then((d) => { if (selRef.current === shotId) setDetail(d) }) // 刷新真实帧提示词
 
     } catch (e: any) {
-      setFrame(ft, { busy: false, stage: '', error: e?.message || '生成失败' })
+      if (alive()) setFrame(ft, { busy: false, stage: '', error: e?.message || '生成失败' })
     }
   }
 
@@ -168,12 +186,12 @@ export default function Frames({ project }: { project: Project | null }) {
                 return (
                   <div key={f.key} className={'frame' + (st.fileId ? ' filled' : '')}>
                     <div className="img">
-                      {st.fileId ? (
+                      {st.busy ? (
+                        <div className="ph"><div className="plus">◔</div>{st.stage}</div>
+                      ) : st.fileId ? (
                         <img className="zoomable" src={fileUrl(st.fileId)} alt={f.label} title="点击放大"
                           onClick={() => setLb(fileUrl(st.fileId!))}
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                      ) : st.busy ? (
-                        <div className="ph"><div className="plus">◔</div>{st.stage}</div>
                       ) : st.error ? (
                         <div className="ph" style={{ color: 'var(--danger)' }} title={st.error}>⚠ {st.error.slice(0, 24)}</div>
                       ) : (
@@ -183,7 +201,10 @@ export default function Frames({ project }: { project: Project | null }) {
                     <div className="cap">
                       <span className="k">{f.label}</span>
                       {st.fileId ? (
-                        <span className="tag" style={{ cursor: 'pointer' }} onClick={() => generate(f.key)}>重生成</span>
+                        <span className="tag" style={{ cursor: st.busy ? 'default' : 'pointer', opacity: st.busy ? 0.5 : 1 }}
+                          onClick={st.busy ? undefined : () => generate(f.key)}>
+                          {st.busy ? '生成中' : '重生成'}
+                        </span>
                       ) : (
                         <button className="btn ghost" style={{ padding: '2px 9px', fontSize: 11 }} disabled={st.busy || !sel} onClick={() => generate(f.key)}>
                           {st.busy ? '生成中' : '生成'}

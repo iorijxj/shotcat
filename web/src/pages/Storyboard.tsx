@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type Chapter, type Entity, type Project, type Shot } from '../lib/api'
-
-const ACTS = ['建置', '对抗', '收束']
 
 export default function Storyboard({ project }: { project: Project | null }) {
   const [chapters, setChapters] = useState<Chapter[]>([])
@@ -14,13 +12,20 @@ export default function Storyboard({ project }: { project: Project | null }) {
   const [loading, setLoading] = useState(false)
   const [pipe, setPipe] = useState('') // shot-breakdown / unit-gen 进行中
   const [batchP, setBatchP] = useState('') // 批量生成进度
+  const [err, setErr] = useState('')
   const navigate = useNavigate()
+
+  const reqRef = useRef(0) // reloadShots 请求令牌：仅最新请求可回写，避免切集竞态
+  const cancelledRef = useRef(false) // 卸载后停止轮询
+  useEffect(() => () => { cancelledRef.current = true }, [])
 
   const reloadShots = (cid = chapterId) => {
     if (!cid) return Promise.resolve()
+    const token = ++reqRef.current
     setLoading(true)
     return Promise.all([api.shots(cid), api.shotDetails().catch(() => ({}))])
       .then(([s, details]) => {
+        if (token !== reqRef.current) return // 已切到别的章节，丢弃过期响应
         const merged = s.map((x) => {
           const d = (details as Record<string, any>)[x.id]
           return d ? { ...x, camera_shot: d.camera_shot, duration: d.duration } : x
@@ -28,8 +33,8 @@ export default function Storyboard({ project }: { project: Project | null }) {
         setShots(merged)
         setSel(merged[0]?.id ?? '')
       })
-      .catch(() => setShots([]))
-      .finally(() => setLoading(false))
+      .catch(() => { if (token === reqRef.current) setShots([]) })
+      .finally(() => { if (token === reqRef.current) setLoading(false) })
   }
 
   // AI 拆镜头(镜头级分镜)
@@ -39,7 +44,7 @@ export default function Storyboard({ project }: { project: Project | null }) {
     setPipe('shot')
     try {
       const j = await api.runPipeline('shot-breakdown', project.id)
-      await api.pollPipeline(j)
+      await api.pollPipeline(j, 200, () => cancelledRef.current)
       await reloadShots()
     } catch (e: any) { alert(e?.message || '拆镜头失败') } finally { setPipe('') }
   }
@@ -49,7 +54,7 @@ export default function Storyboard({ project }: { project: Project | null }) {
     setPipe('unit')
     try {
       const j = await api.runPipeline('unit-gen', project.id)
-      await api.pollPipeline(j)
+      await api.pollPipeline(j, 200, () => cancelledRef.current)
       alert('视听单元已生成（bridge/units-*.json，供图生视频/图像 prompt）')
     } catch (e: any) { alert(e?.message || '视听单元生成失败') } finally { setPipe('') }
   }
@@ -57,51 +62,42 @@ export default function Storyboard({ project }: { project: Project | null }) {
   async function genAllFrames() {
     if (!shots.length || batchP) return
     const ratio = project?.default_video_ratio || '9:16'
+    const cancelled = () => cancelledRef.current
     for (let i = 0; i < shots.length; i++) {
+      if (cancelled()) break // 页面已卸载，不再投新任务
       setBatchP(`${i + 1}/${shots.length}`)
       const s = shots[i]
       try {
         let prompt = ''
         try {
           const pt = await api.createFramePromptTask(s.id, 'key')
-          const ps = await api.pollTask(pt)
+          const ps = await api.pollTask(pt, undefined, 60, cancelled)
           if (ps.status === 'succeeded') prompt = ((await api.taskResult(pt)).result?.prompt || '').trim()
         } catch {}
         if (!prompt) prompt = [s.camera_shot, s.title, s.script_excerpt].filter(Boolean).join('，').slice(0, 300)
         const it = await api.createFrameImageTask(s.id, 'key', prompt, ratio)
-        await api.pollTask(it)
+        await api.pollTask(it, undefined, 60, cancelled)
       } catch {}
     }
     setBatchP('')
-    await reloadShots()
+    if (!cancelled()) await reloadShots()
   }
 
   useEffect(() => {
     if (!project) return
+    setErr('')
     api.chapters(project.id).then((cs) => {
       setChapters(cs)
       setChapterId(cs[0]?.id ?? '')
-    })
+    }).catch(() => setErr('章节加载失败'))
     api.entities('scene', project.id).then(setScenes).catch(() => {})
     api.entities('character', project.id).then(setChars).catch(() => {})
-  }, [project])
+  }, [project?.id])
 
   useEffect(() => {
     reloadShots(chapterId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapterId])
-
-  const n = Math.max(shots.length, 1)
-  const grid = { gridTemplateColumns: `88px repeat(${n}, minmax(150px, 1fr))` }
-  // 三幕切分：把镜头按序等分到 建置/对抗/收束
-  const actSpans = useMemo(() => {
-    const per = Math.max(1, Math.ceil(n / 3))
-    return ACTS.map((label, i) => {
-      const start = i * per + 1
-      const end = Math.min(n, (i + 1) * per)
-      return { label, from: start + 1, to: end + 2 } // grid line (1=label col)
-    }).filter((a) => a.to > a.from)
-  }, [n])
 
   if (!project) return <div className="center">未找到项目 · 请先用 bridge 导入剧本</div>
 
@@ -131,6 +127,8 @@ export default function Storyboard({ project }: { project: Project | null }) {
         <span className="ctx-k">场景</span><span className="ctx-v">{scenes.map((s) => s.name).join(' · ') || '未设置'}</span>
         <span className="ctx-k">造型</span><span className="ctx-v">{chars.map((c) => c.name).join(' · ') || '—'}</span>
       </div>
+
+      {err && <div className="fld-err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {loading ? (
         <div className="center" style={{ height: 200 }}>加载中…</div>

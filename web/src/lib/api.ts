@@ -31,7 +31,7 @@ export interface FrameImage { id: number; shot_detail_id: string; frame_type: 'f
 export interface TaskStatus { task_id: string; status: string; progress: number }
 export type FrameType = 'first' | 'key' | 'last'
 
-interface Paged<T> { items: T[]; pagination: { total: number } }
+interface Paged<T> { items: T[]; pagination: { total: number; max_page?: number } }
 
 export const fileUrl = (fileId: string) => `${BASE}/studio/files/${fileId}/download`
 
@@ -62,12 +62,16 @@ export const api = {
       d.items.sort((a, b) => a.index - b.index),
     ),
   // 镜头详情(景别/机位/运镜/时长)不在 shots 列表里，单独批量取，按 id 建映射
-  shotDetails: () =>
-    get<Paged<any>>('/studio/shot-details?page_size=100').then((d) => {
-      const m: Record<string, any> = {}
+  // 后端无 project/chapter 过滤，只能翻页取全量（page_size=100，直到 max_page）
+  async shotDetails(): Promise<Record<string, any>> {
+    const m: Record<string, any> = {}
+    for (let page = 1; ; page++) {
+      const d = await get<Paged<any>>(`/studio/shot-details?page=${page}&page_size=100`)
       d.items.forEach((x) => (m[x.id] = x))
-      return m
-    }),
+      if (page >= (d.pagination?.max_page ?? 1)) break
+    }
+    return m
+  },
   // 单个镜头详情：含真实的首/关/尾帧提示词(frame-prompt 任务生成后落库)
   shotDetail: (shotId: string) => get<any>(`/studio/shot-details/${shotId}`).catch(() => null),
   createChapter: (projectId: string, index: number, title: string, raw_text: string) =>
@@ -106,14 +110,14 @@ export const api = {
     return r.id
   },
   // 生成造型图：建槽 → 投任务 → 轮询 → 返回 file_id
-  async generateEntityImage(type: string, id: string, prompt: string, onProgress?: (p: number) => void): Promise<string> {
+  async generateEntityImage(type: string, id: string, prompt: string, onProgress?: (p: number) => void, isCancelled?: () => boolean): Promise<string> {
     const imageId = await api.ensureImageSlot(type, id)
     const path =
       type === 'character' ? `/studio/image-tasks/characters/${id}/image-tasks`
       : type === 'actor' ? `/studio/image-tasks/actors/${id}/image-tasks`
       : `/studio/image-tasks/assets/${type}/${id}/image-tasks`
     const { task_id } = await post<{ task_id: string }>(path, { image_id: imageId, prompt })
-    const s = await api.pollTask(task_id, onProgress)
+    const s = await api.pollTask(task_id, onProgress, 60, isCancelled)
     if (s.status !== 'succeeded') {
       const r = await api.taskResult(task_id).catch(() => null)
       throw new Error(r?.error || `生成${s.status === 'cancelled' ? '已取消' : '失败'}`)
@@ -132,8 +136,9 @@ export const api = {
       if (!j.job_id) throw new Error(j.error || 'pipeline 启动失败(服务未起?)')
       return j.job_id as string
     }),
-  async pollPipeline(jobId: string, tries = 200): Promise<{ status: string; log: string; error: string }> {
+  async pollPipeline(jobId: string, tries = 200, isCancelled?: () => boolean): Promise<{ status: string; log: string; error: string }> {
     for (let i = 0; i < tries; i++) {
+      if (isCancelled?.()) return { status: 'cancelled', log: '', error: '' }
       const j = await fetch(`/pipeline/jobs/${jobId}`).then((r) => r.json())
       if (j.status === 'done') return j
       if (j.status === 'error') throw new Error(j.error || '生成失败')
@@ -143,11 +148,21 @@ export const api = {
   },
 
   // 轮询任务直到 succeeded/failed（默认最多 ~120s）
-  async pollTask(taskId: string, onProgress?: (p: number) => void, tries = 60): Promise<TaskStatus> {
+  // 容忍瞬时网络错误：连续 3 次失败才放弃，单个 502 不应中断仍在跑的任务
+  async pollTask(taskId: string, onProgress?: (p: number) => void, tries = 60, isCancelled?: () => boolean): Promise<TaskStatus> {
+    let last: TaskStatus | null = null
+    let errs = 0
     for (let i = 0; i < tries; i++) {
-      const s = await api.taskStatus(taskId)
-      onProgress?.(s.progress)
-      if (s.status === 'succeeded' || s.status === 'failed' || s.status === 'cancelled') return s
+      if (isCancelled?.()) return last ?? { task_id: taskId, status: 'cancelled', progress: 0 }
+      try {
+        const s = await api.taskStatus(taskId)
+        last = s
+        errs = 0
+        onProgress?.(s.progress)
+        if (s.status === 'succeeded' || s.status === 'failed' || s.status === 'cancelled') return s
+      } catch (e) {
+        if (++errs >= 3) throw e
+      }
       await sleep(2500)
     }
     throw new Error('任务超时')

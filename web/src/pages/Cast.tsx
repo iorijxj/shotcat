@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, fileUrl, type Entity, type Project } from '../lib/api'
 import Lightbox from '../Lightbox'
 
@@ -20,6 +20,8 @@ export default function Cast({ project }: { project: Project | null }) {
   const [batch, setBatch] = useState(false)
   const [pipe, setPipe] = useState('') // 视觉词典生成中
   const [lb, setLb] = useState<string | null>(null)
+  const cancelledRef = useRef(false) // 卸载后停止轮询/批量
+  useEffect(() => () => { cancelledRef.current = true }, [])
 
   const loadAll = () => {
     if (!project) return
@@ -60,7 +62,7 @@ export default function Cast({ project }: { project: Project | null }) {
     if (busy) return
     setBusy(e.id); setErr(''); setStage('生成中…')
     try {
-      const fid = await api.generateEntityImage(tab, e.id, designPrompt(tab, e), (p) => setStage(`生成中… ${p}%`))
+      const fid = await api.generateEntityImage(tab, e.id, designPrompt(tab, e), (p) => setStage(`生成中… ${p}%`), () => cancelledRef.current)
       setFresh((m) => ({ ...m, [e.id]: fid }))
     } catch (x: any) {
       setErr(`${e.name}：${x?.message || '生成失败'}`)
@@ -70,7 +72,7 @@ export default function Cast({ project }: { project: Project | null }) {
   }
   async function genMissing() {
     setBatch(true); setErr('')
-    for (const e of items) { if (!thumbOf(e)) await gen(e) }
+    for (const e of items) { if (cancelledRef.current) break; if (!thumbOf(e)) await gen(e) }
     setBatch(false)
   }
   async function lockVisualDict() {
@@ -78,7 +80,7 @@ export default function Cast({ project }: { project: Project | null }) {
     setPipe('dict'); setErr('')
     try {
       const job = await api.runPipeline('visual-dict', project.id)
-      await api.pollPipeline(job)
+      await api.pollPipeline(job, 200, () => cancelledRef.current)
       loadAll()
     } catch (x: any) { setErr(x?.message || '视觉词典生成失败') } finally { setPipe('') }
   }

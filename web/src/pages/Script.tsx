@@ -16,9 +16,9 @@ export default function Script({ project }: { project: Project | null }) {
       const d: Record<string, string> = {}
       cs.forEach((c) => (d[c.id] = c.raw_text || ''))
       setDraft(d)
-    })
+    }).catch(() => setMsg('剧本加载失败'))
   }
-  useEffect(load, [project])
+  useEffect(load, [project?.id])
 
   async function addChapter() {
     if (!project || !newText.trim()) return

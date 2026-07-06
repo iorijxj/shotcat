@@ -40,8 +40,12 @@ export default function Lobby({ onOpen }: { onOpen: (p: Project) => void }) {
   async function remove(e: React.MouseEvent, p: Project) {
     e.stopPropagation()
     if (!confirm(`删除项目《${p.name}》？此操作不可撤销。`)) return
-    await api.deleteProject(p.id).catch(() => {})
-    load()
+    try {
+      await api.deleteProject(p.id)
+      load()
+    } catch (x: any) {
+      alert(x?.message || '删除失败')
+    }
   }
 
   return (

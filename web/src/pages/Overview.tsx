@@ -23,11 +23,13 @@ function SIcon({ n }: { n: string }) {
 
 export default function Overview({ project }: { project: Project | null }) {
   const [st, setSt] = useState<Stats | null>(null)
+  const [err, setErr] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     if (!project) return
     const pid = project.id
+    setSt(null); setErr(false)
     Promise.all([
       api.chapters(pid),
       api.entities('character', pid).catch(() => []),
@@ -39,8 +41,8 @@ export default function Overview({ project }: { project: Project | null }) {
       let shots = 0
       for (const c of chs) shots += (await api.shots(c.id).catch(() => [])).length
       setSt({ chapters: chs.length, character: ch.length, scene: sc.length, prop: pr.length, costume: co.length, actor: ac.length, shots })
-    })
-  }, [project])
+    }).catch(() => setErr(true))
+  }, [project?.id])
 
   if (!project) return <div className="center">请从作品库选择项目</div>
 
@@ -69,7 +71,7 @@ export default function Overview({ project }: { project: Project | null }) {
             <div className="tk">{t.k}</div>
           </div>
         ))}
-        {!st && <div className="muted">统计加载中…</div>}
+        {!st && <div className="muted">{err ? '统计加载失败' : '统计加载中…'}</div>}
       </div>
 
       <div className="ov-stages-h">进入创作阶段</div>

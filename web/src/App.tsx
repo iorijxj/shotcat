@@ -73,8 +73,12 @@ export default function App() {
               value={project.default_video_ratio || '9:16'}
               onChange={(e) => {
                 const r = e.target.value
-                api.updateProject(project.id, { default_video_ratio: r }).catch(() => {})
+                const prev = project.default_video_ratio || '9:16'
                 setProject({ ...project, default_video_ratio: r })
+                api.updateProject(project.id, { default_video_ratio: r }).catch(() => {
+                  setProject((p) => (p ? { ...p, default_video_ratio: prev } : p))
+                  alert('画幅保存失败，已恢复原值')
+                })
               }}
             >
               {['9:16', '16:9', '1:1', '4:3', '3:4', '2:3', '3:2', '21:9'].map((r) => (
