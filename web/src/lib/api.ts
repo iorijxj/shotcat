@@ -25,7 +25,23 @@ async function post<T = any>(path: string, body: any): Promise<T> {
 
 export interface Project { id: string; name: string; description?: string; style?: string; visual_style?: string; progress?: number; default_video_ratio?: string }
 export interface Chapter { id: string; index: number; title: string; project_id: string; raw_text?: string }
-export interface Shot { id: string; index: number; title?: string; status?: string; script_excerpt?: string; camera_shot?: string; duration?: number }
+export interface Shot {
+  id: string; index: number; chapter_id?: string; title?: string; status?: string; script_excerpt?: string
+  camera_shot?: string; duration?: number; angle?: string; movement?: string; action_beats?: string[]; description?: string
+  scene_id?: string | null; mood_tags?: string[]
+}
+
+// 镜头语言代码 → 中文（与后端 code、bridge/shot_breakdown 词表一致）
+export const CAMERA_ZH: Record<string, string> = {
+  ECU: '大特写', CU: '特写', MCU: '中近景', MS: '中景', MLS: '中远景', LS: '远景', ELS: '大远景',
+}
+export const ANGLE_ZH: Record<string, string> = {
+  EYE_LEVEL: '平视', HIGH_ANGLE: '俯拍', LOW_ANGLE: '仰拍', BIRD_EYE: '鸟瞰', DUTCH: '荷兰角', OVER_SHOULDER: '过肩',
+}
+export const MOVE_ZH: Record<string, string> = {
+  STATIC: '固定', PAN: '横摇', TILT: '纵摇', DOLLY_IN: '推', DOLLY_OUT: '拉', TRACK: '跟移',
+  CRANE: '摇臂', HANDHELD: '手持', STEADICAM: '稳定器', ZOOM_IN: '变焦推', ZOOM_OUT: '变焦拉',
+}
 export interface Entity { id: string; name: string; description?: string; thumbnail?: string; costume_id?: string }
 export interface FrameImage { id: number; shot_detail_id: string; frame_type: 'first' | 'key' | 'last'; file_id: string | null }
 export interface TaskStatus { task_id: string; status: string; progress: number }
@@ -74,6 +90,17 @@ export const api = {
   },
   // 单个镜头详情：含真实的首/关/尾帧提示词(frame-prompt 任务生成后落库)
   shotDetail: (shotId: string) => get<any>(`/studio/shot-details/${shotId}`).catch(() => null),
+  // 整章镜头的角色关联（批量）：shot_id → character_id[]
+  shotCharacters: (chapterId: string) =>
+    get<{ shot_id: string; character_id: string }[]>(`/studio/shot-character-links?chapter_id=${chapterId}`).then((items) => {
+      const m: Record<string, string[]> = {}
+      items.forEach((x) => (m[x.shot_id] ||= []).push(x.character_id))
+      return m
+    }),
+  updateShotDetail: (shotId: string, patch: Record<string, any>) =>
+    fetch(`${BASE}/studio/shot-details/${shotId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    }).then((r) => { if (!r.ok) throw new Error(`保存失败 ${r.status}`) }),
   createChapter: (projectId: string, index: number, title: string, raw_text: string) =>
     post('/studio/chapters', {
       id: `${projectId}_ch${String(index).padStart(2, '0')}`, project_id: projectId, index, title, raw_text,
@@ -88,13 +115,42 @@ export const api = {
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>
     get<Paged<FrameImage>>(`/studio/shot-frame-images?shot_detail_id=${shotId}&page_size=50`).then((d) => d.items),
+  // 全量帧图索引（一次翻页拉齐）：shot_id → { frame_type: file_id }，做镜头列表缩略图
+  async frameIndex(): Promise<Record<string, Partial<Record<FrameType, string>>>> {
+    const m: Record<string, Partial<Record<FrameType, string>>> = {}
+    for (let page = 1; ; page++) {
+      const d = await get<Paged<FrameImage>>(`/studio/shot-frame-images?page=${page}&page_size=100`)
+      d.items.forEach((im) => {
+        if (!im.file_id) return
+        ;(m[im.shot_detail_id] ||= {})[im.frame_type] = im.file_id
+      })
+      if (page >= (d.pagination?.max_page ?? 1)) break
+    }
+    return m
+  },
   createFramePromptTask: (shotId: string, frameType: FrameType) =>
     post<{ task_id: string }>('/film/tasks/shot-frame-prompts', { shot_id: shotId, frame_type: frameType }).then((d) => d.task_id),
-  createFrameImageTask: (shotId: string, frameType: FrameType, prompt: string, targetRatio = '16:9') =>
+  // 镜头关联资产（角色/场景/道具/服装）及各自最佳造型图 file_id——作帧生成参考图
+  shotLinkedAssets: (shotId: string) =>
+    get<Paged<{ type: string; id: string; image_id: number | null; file_id: string | null }>>(
+      `/studio/shots/${shotId}/linked-assets?page_size=50`,
+    ).then((d) => d.items),
+  // 取该镜头可用的参考图（角色造型优先，最多 6 张）：人物一致性的关键——
+  // 有参考图时后端 OpenAI 通道自动走 /images/edits（图生图），角色脸就锚在造型图上
+  async frameRefs(shotId: string) {
+    const order: Record<string, number> = { character: 0, costume: 1, scene: 2, prop: 3 }
+    const items = await api.shotLinkedAssets(shotId).catch(() => [])
+    return items
+      .filter((x) => x.file_id)
+      .sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9))
+      .slice(0, 6)
+  },
+  createFrameImageTask: (shotId: string, frameType: FrameType, prompt: string, targetRatio = '9:16', refs?: any[]) =>
     post<{ task_id: string }>(`/studio/image-tasks/shot/${shotId}/frame-image-tasks`, {
       frame_type: frameType,
       prompt,
       target_ratio: targetRatio,
+      ...(refs?.length ? { images: refs } : {}),
     }).then((d) => d.task_id),
   taskStatus: (taskId: string) => get<TaskStatus>(`/film/tasks/${taskId}/status`),
   taskResult: (taskId: string) => get<{ status: string; result: any; error: string }>(`/film/tasks/${taskId}/result`),
@@ -107,6 +163,13 @@ export const api = {
     const imgs = await api.entityImages(type, id)
     if (imgs[0]?.id != null) return imgs[0].id
     const r = await post<{ id: number }>(`/studio/entities/${type}/${id}/images`, { view_angle: 'FRONT', quality_level: 'LOW' })
+    // 后端 commit-after-yield：槽刚建好立刻发图像任务会校验不到（"image_id does not belong"），
+    // 轮询到新槽可读再返回
+    for (let i = 0; i < 10; i++) {
+      const again = await api.entityImages(type, id)
+      if (again.some((x) => x.id === r.id)) break
+      await sleep(700)
+    }
     return r.id
   },
   // 生成造型图：建槽 → 投任务 → 轮询 → 返回 file_id
@@ -117,7 +180,7 @@ export const api = {
       : type === 'actor' ? `/studio/image-tasks/actors/${id}/image-tasks`
       : `/studio/image-tasks/assets/${type}/${id}/image-tasks`
     const { task_id } = await post<{ task_id: string }>(path, { image_id: imageId, prompt })
-    const s = await api.pollTask(task_id, onProgress, 60, isCancelled)
+    const s = await api.pollTask(task_id, onProgress, 120, isCancelled) // 图像任务上限 5 分钟（三视图大图常超 150s）
     if (s.status !== 'succeeded') {
       const r = await api.taskResult(task_id).catch(() => null)
       throw new Error(r?.error || `生成${s.status === 'cancelled' ? '已取消' : '失败'}`)
@@ -129,17 +192,31 @@ export const api = {
   },
 
   // —— pipeline 文本三步(视觉词典/镜头分镜/视听单元)，走 bridge/pipeline_server(:5280) ——
+  // 服务没起时代理返回空/HTML，r.json() 会抛晦涩的 "Unexpected end of JSON input"，统一转成人话
+  async _pipelineJson(url: string, init?: RequestInit): Promise<any> {
+    let r: Response
+    try {
+      r = await fetch(url, init)
+    } catch {
+      throw new Error('pipeline 服务连不上（bridge/pipeline_server.py 未启动？端口 5280）')
+    }
+    try {
+      return await r.json()
+    } catch {
+      throw new Error('pipeline 服务未启动（cd bridge && python pipeline_server.py）')
+    }
+  },
   runPipeline: (step: 'extract-setup' | 'visual-dict' | 'shot-breakdown' | 'unit-gen', pid: string) =>
-    fetch(`/pipeline/${step}`, {
+    api._pipelineJson(`/pipeline/${step}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pid }),
-    }).then((r) => r.json()).then((j) => {
+    }).then((j) => {
       if (!j.job_id) throw new Error(j.error || 'pipeline 启动失败(服务未起?)')
       return j.job_id as string
     }),
   async pollPipeline(jobId: string, tries = 200, isCancelled?: () => boolean): Promise<{ status: string; log: string; error: string }> {
     for (let i = 0; i < tries; i++) {
       if (isCancelled?.()) return { status: 'cancelled', log: '', error: '' }
-      const j = await fetch(`/pipeline/jobs/${jobId}`).then((r) => r.json())
+      const j = await api._pipelineJson(`/pipeline/jobs/${jobId}`)
       if (j.status === 'done') return j
       if (j.status === 'error') throw new Error(j.error || '生成失败')
       await sleep(3000)

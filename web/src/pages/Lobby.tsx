@@ -23,13 +23,14 @@ export default function Lobby({ onOpen }: { onOpen: (p: Project) => void }) {
     if (!form.name.trim()) return setErr('请输入剧名')
     setBusy(true); setErr('')
     try {
-      const id = await api.createProject({ ...form, name: form.name.trim() })
+      const name = form.name.trim()
+      const id = await api.createProject({ ...form, name })
       setCreating(false)
+      const created = { ...form, id, name, progress: 0 }
       setForm({ name: '', style: '真人都市', visual_style: '现实', default_video_ratio: '9:16', description: '' })
-      const ps = await api.projects()
-      setProjects(ps)
-      const p = ps.find((x) => x.id === id)
-      if (p) onOpen(p)
+      // 后端 commit-after-yield：创建后立刻拉列表可能还查不到新项目（时序缝隙），
+      // 直接用表单数据构造项目对象进入，不依赖回读
+      onOpen(created)
     } catch (e: any) {
       setErr(e?.message || '创建失败')
     } finally {

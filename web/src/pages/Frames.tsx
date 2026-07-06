@@ -24,18 +24,22 @@ export default function Frames({ project }: { project: Project | null }) {
   const [scenes, setScenes] = useState<Entity[]>([])
   const [lb, setLb] = useState<string | null>(null)
   const [detail, setDetail] = useState<any>(null) // 镜头详情(含真实首/关/尾帧提示词)
+  const [openCh, setOpenCh] = useState<Record<string, boolean>>({}) // 镜头列表按集折叠
+  const [thumbs, setThumbs] = useState<Record<string, Partial<Record<FrameType, string>>>>({}) // 镜头缩略图索引
 
   // 当前选中镜头 id 的实时引用：异步链回写前用它校验镜头未被切走
   const selRef = useRef<string | null>(null)
   useEffect(() => { selRef.current = sel?.id ?? null }, [sel])
   // 卸载时置位，正在轮询的任务据此停止
+  // 挂载时重置：StrictMode(dev) 模拟卸载会把 ref 置 true 且跨挂载保留，不重置则轮询秒取消
   const cancelledRef = useRef(false)
-  useEffect(() => () => { cancelledRef.current = true }, [])
+  useEffect(() => { cancelledRef.current = false; return () => { cancelledRef.current = true } }, [])
 
   useEffect(() => {
     if (!project) return
     api.entities('character', project.id).then(setCast).catch(() => {})
     api.entities('scene', project.id).then(setScenes).catch(() => {})
+    api.frameIndex().then(setThumbs).catch(() => {})
     api.chapters(project.id).then((cs) => {
       setChapters(cs)
       if (!cs.length) return
@@ -50,7 +54,16 @@ export default function Frames({ project }: { project: Project | null }) {
         })
         setShots(merged)
         const want = params.get('shot')
-        setSel(merged.find((x) => x.id === want) ?? merged[0] ?? null)
+        const target = merged.find((x) => x.id === want) ?? merged[0] ?? null
+        setSel(target)
+        // 默认只展开选中镜头所在的集；已手动开合过的保持原状
+        const focusCh = target?.chapter_id ?? cs[0].id
+        setOpenCh((o) => {
+          const n = { ...o }
+          cs.forEach((c) => { if (n[c.id] === undefined) n[c.id] = c.id === focusCh })
+          if (want && target) n[focusCh] = true // 深链指定的镜头一定展开可见
+          return n
+        })
       })
     }).catch(() => {})
   }, [project?.id, params])
@@ -107,10 +120,12 @@ export default function Frames({ project }: { project: Project | null }) {
       if (!prompt) throw new Error('无可用提示词（该镜头缺少剧本摘录）')
 
       // 2) 生成图（target_ratio 必填；503=无图像模型 会在此同步抛出）
-      if (alive()) setFrame(ft, { stage: '生成画面…' })
-      const ratio = project?.default_video_ratio || '16:9'
-      const itask = await api.createFrameImageTask(shotId, ft, prompt, ratio)
-      const is = await api.pollTask(itask, (p) => { if (alive()) setFrame(ft, { stage: `生成画面… ${p}%` }) }, 60, cancelled)
+      // 带上镜头关联的造型图作参考图（角色优先）——人物跨镜一致性的关键
+      const refs = await api.frameRefs(shotId)
+      if (alive()) setFrame(ft, { stage: refs.length ? `生成画面…（${refs.length} 张参考图）` : '生成画面…' })
+      const ratio = project?.default_video_ratio || '9:16'
+      const itask = await api.createFrameImageTask(shotId, ft, prompt, ratio, refs)
+      const is = await api.pollTask(itask, (p) => { if (alive()) setFrame(ft, { stage: `生成画面… ${p}%` }) }, 120, cancelled)
       if (is.status !== 'succeeded') {
         const r = await api.taskResult(itask).catch(() => null)
         throw new Error(r?.error || `生成${is.status === 'cancelled' ? '已取消' : '失败'}`)
@@ -120,6 +135,8 @@ export default function Frames({ project }: { project: Project | null }) {
       const imgs = await api.frameImages(shotId)
       const hit = imgs.find((im) => im.frame_type === ft)
       if (!hit?.file_id) throw new Error('任务完成但未返回图片（模型未产出）')
+      // 缩略图按镜头 id 记录，与当前选中无关，切走了也更新
+      setThumbs((m) => ({ ...m, [shotId]: { ...m[shotId], [ft]: hit.file_id! } }))
       // 镜头已切走：结果已落库，下次选回该镜头 loadFrames 会取到；此处不再回写 UI
       if (!alive()) return
       setFrame(ft, { busy: false, stage: '', fileId: hit.file_id })
@@ -151,15 +168,36 @@ export default function Frames({ project }: { project: Project | null }) {
         <div className="canvas">
           <div className="fstrip">
             <div className="lbl">镜头 · {shots.length}</div>
-            {shots.map((s) => (
-              <div key={s.id} className={'fshot' + (sel?.id === s.id ? ' sel' : '')} onClick={() => setSel(s)}>
-                <div className={'th' + (s.status === 'ready' ? ' done' : '')} />
-                <div className="m">
-                  <div className="t">{s.title || `镜头 ${s.index}`}</div>
-                  <div className="s">{String(s.index).padStart(2, '0')}{s.camera_shot ? ` · ${s.camera_shot}` : ''}</div>
+            {chapters.map((c) => {
+              const list = shots.filter((s) => s.chapter_id === c.id)
+              if (!list.length) return null
+              return (
+                <div className="fs-grp" key={c.id}>
+                  <div className="fs-ch" onClick={() => setOpenCh((o) => ({ ...o, [c.id]: !o[c.id] }))}>
+                    <span className="ep-caret">{openCh[c.id] ? '▾' : '▸'}</span>
+                    <span className="t">第 {c.index} 集</span>
+                    <span className="n">{list.length}</span>
+                  </div>
+                  {openCh[c.id] && list.map((s) => {
+                    const t = thumbs[s.id]
+                    const tf = t?.key || t?.first || t?.last
+                    return (
+                      <div key={s.id} className={'fshot' + (sel?.id === s.id ? ' sel' : '')} onClick={() => setSel(s)}>
+                        {tf ? (
+                          <img className="th" src={fileUrl(tf)} alt="" loading="lazy" />
+                        ) : (
+                          <div className={'th' + (s.status === 'ready' ? ' done' : '')} />
+                        )}
+                        <div className="m">
+                          <div className="t">{s.title || `镜头 ${s.index}`}</div>
+                          <div className="s">{String(s.index).padStart(2, '0')}{s.camera_shot ? ` · ${s.camera_shot}` : ''}</div>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           <div>

@@ -21,7 +21,9 @@ export default function Cast({ project }: { project: Project | null }) {
   const [pipe, setPipe] = useState('') // 视觉词典生成中
   const [lb, setLb] = useState<string | null>(null)
   const cancelledRef = useRef(false) // 卸载后停止轮询/批量
-  useEffect(() => () => { cancelledRef.current = true }, [])
+  // 挂载时必须重置：React 18 StrictMode(dev) 会模拟卸载再挂载，ref 跨挂载保留，
+  // 不重置的话所有轮询一进来就"已取消"（任务照发、前端秒放弃）
+  useEffect(() => { cancelledRef.current = false; return () => { cancelledRef.current = true } }, [])
 
   const loadAll = () => {
     if (!project) return
@@ -129,7 +131,7 @@ export default function Cast({ project }: { project: Project | null }) {
                 <div className="cc-h">
                   <span className="n">{e.name}</span>
                   <span className="role">{roleLabel}</span>
-                  <span className="id">{e.id.slice(-10)}</span>
+                  <span className="id">{e.id.split('__').pop()}</span>
                 </div>
                 <div className="cc-desc">{visualDesc(e) || '（未锁定，先跑「① 锁定视觉词典」）'}</div>
                 <button className="btn primary" style={{ width: '100%' }} disabled={!!busy || batch} onClick={() => gen(e)}>

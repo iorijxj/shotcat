@@ -1,6 +1,6 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { api, type Project } from './lib/api'
+import { api, type Entity, type Project, type Shot } from './lib/api'
 import Storyboard from './pages/Storyboard'
 import Cast from './pages/Cast'
 import Frames from './pages/Frames'
@@ -33,8 +33,14 @@ function Placeholder({ title }: { title: string }) {
   return <div className="center">{title} · 界面建设中</div>
 }
 
+const ETYPE_ZH: Record<string, string> = { character: '角色', scene: '场景', prop: '道具', costume: '服装' }
+
 export default function App() {
   const [project, setProject] = useState<Project | null>(null)
+  const [ready, setReady] = useState<{ done: number; total: number } | null>(null) // 画面就绪进度
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [sIdx, setSIdx] = useState<{ shots: Shot[]; ents: (Entity & { etype: string })[] } | null>(null)
   const navigate = useNavigate()
   const loc = useLocation()
   const inStage = STAGE_PATHS.some((p) => loc.pathname.startsWith(p)) // 阶段页才显示左轨；作品库/项目页独立
@@ -52,9 +58,57 @@ export default function App() {
 
   const openProject = (p: Project) => {
     setProject(p)
+    setSIdx(null)
     localStorage.setItem('duanju.pid', p.id)
     navigate('/overview')
   }
+
+  // 真实进度：画面就绪镜头 ÷ 总镜头（切页时刷新）
+  useEffect(() => {
+    if (!project) { setReady(null); return }
+    let stale = false
+    ;(async () => {
+      try {
+        const cs = await api.chapters(project.id)
+        const perCh = await Promise.all(cs.map((c) => api.shots(c.id).catch(() => [] as Shot[])))
+        const all = perCh.flat()
+        if (!stale) setReady({ done: all.filter((s) => s.status === 'ready').length, total: all.length })
+      } catch {}
+    })()
+    return () => { stale = true }
+  }, [project?.id, loc.pathname])
+
+  // ⌘K / Ctrl+K 打开搜索，Esc 关闭
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(true) }
+      if (e.key === 'Escape') setSearchOpen(false)
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
+
+  // 首次打开搜索时建索引（镜头 + 实体）
+  useEffect(() => {
+    if (!searchOpen || !project || sIdx) return
+    ;(async () => {
+      try {
+        const cs = await api.chapters(project.id)
+        const perCh = await Promise.all(cs.map((c) => api.shots(c.id).catch(() => [] as Shot[])))
+        const ents = (await Promise.all(Object.keys(ETYPE_ZH).map(async (t) =>
+          (await api.entities(t, project.id).catch(() => [] as Entity[])).map((e) => ({ ...e, etype: t })),
+        ))).flat()
+        setSIdx({ shots: perCh.flat(), ents })
+      } catch {}
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen, project?.id])
+
+  const ql = q.trim().toLowerCase()
+  const hitShots = ql && sIdx ? sIdx.shots.filter((s) =>
+    (s.title || '').toLowerCase().includes(ql) || (s.script_excerpt || '').toLowerCase().includes(ql)).slice(0, 8) : []
+  const hitEnts = ql && sIdx ? sIdx.ents.filter((e) => e.name.toLowerCase().includes(ql)).slice(0, 6) : []
+  const goHit = (to: string) => { setSearchOpen(false); setQ(''); navigate(to) }
 
   return (
     <div className="app">
@@ -87,12 +141,17 @@ export default function App() {
             </select>
           </label>
         )}
-        <div className="progress">
-          <div className="track"><div className="fill" style={{ width: `${project?.progress ?? 0}%` }} /></div>
-          <span className="pct">{project?.progress ?? 0}%</span>
-        </div>
+        {project && ready && ready.total > 0 && (
+          <div className="progress" title={`画面就绪 ${ready.done} / ${ready.total} 镜`}>
+            <div className="track"><div className="fill" style={{ width: `${Math.round((ready.done / ready.total) * 100)}%` }} /></div>
+            <span className="pct">{Math.round((ready.done / ready.total) * 100)}%</span>
+          </div>
+        )}
         <div className="spacer" />
-        <div className="search"><span>搜索镜头、角色、资产…</span><kbd>⌘K</kbd></div>
+        <div className="search" style={{ cursor: 'pointer' }} onClick={() => project && setSearchOpen(true)}
+          title={project ? '搜索镜头、角色、资产' : '先选择项目'}>
+          <span>搜索镜头、角色、资产…</span><kbd>Ctrl K</kbd>
+        </div>
         <div className="tb-icon" title="切换项目" onClick={() => navigate('/projects')} style={{ cursor: 'pointer' }}>⇄</div>
         <div className="avatar">猫</div>
       </div>
@@ -127,6 +186,42 @@ export default function App() {
           <Route path="/settings" element={<Placeholder title="设置" />} />
         </Routes>
       </div>
+
+      {searchOpen && (
+        <div className="modal-mask" onClick={() => setSearchOpen(false)}>
+          <div className="smodal" onClick={(e) => e.stopPropagation()}>
+            <input autoFocus className="s-in" value={q} placeholder="搜索镜头、角色、场景、道具、服装…"
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                if (hitShots[0]) goHit(`/frames?shot=${hitShots[0].id}`)
+                else if (hitEnts[0]) goHit('/cast')
+              }} />
+            {!ql ? (
+              <div className="s-tip">输入关键字 · 回车跳转第一个结果 · Esc 关闭</div>
+            ) : hitShots.length === 0 && hitEnts.length === 0 ? (
+              <div className="s-tip">{sIdx ? '没有匹配结果' : '索引加载中…'}</div>
+            ) : (
+              <div className="s-list">
+                {hitShots.map((s) => (
+                  <div className="s-item" key={s.id} onClick={() => goHit(`/frames?shot=${s.id}`)}>
+                    <span className="k">镜头</span>
+                    <span className="n">{String(s.index).padStart(2, '0')} · {s.title || s.script_excerpt?.slice(0, 24)}</span>
+                    <span className="d">{(s.script_excerpt || '').slice(0, 40)}</span>
+                  </div>
+                ))}
+                {hitEnts.map((e) => (
+                  <div className="s-item" key={e.etype + e.id} onClick={() => goHit('/cast')}>
+                    <span className="k">{ETYPE_ZH[e.etype]}</span>
+                    <span className="n">{e.name}</span>
+                    <span className="d">{(e.description || '').slice(0, 40)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

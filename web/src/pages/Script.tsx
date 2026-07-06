@@ -1,8 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type TextareaHTMLAttributes } from 'react'
 import { api, type Chapter, type Project } from '../lib/api'
+
+// 随内容自动撑高的剧本编辑区（整页滚动，不在小框里滚）。
+// 优先用原生 field-sizing:content（高度精确贴合内容，无内部滚动，滚轮正常穿透）；
+// 不支持的浏览器退回 JS 量高，+4px 余量避免残留隐形滚动区吃掉滚轮。
+const nativeAutoSize = typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')
+function AutoArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (nativeAutoSize) return
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.max(280, el.scrollHeight + 4) + 'px'
+  }, [props.value])
+  return <textarea ref={ref} {...props} />
+}
 
 export default function Script({ project }: { project: Project | null }) {
   const [chapters, setChapters] = useState<Chapter[]>([])
+  const [open, setOpen] = useState<Record<string, boolean>>({})
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [newText, setNewText] = useState('')
   const [saving, setSaving] = useState('')
@@ -16,16 +33,30 @@ export default function Script({ project }: { project: Project | null }) {
       const d: Record<string, string> = {}
       cs.forEach((c) => (d[c.id] = c.raw_text || ''))
       setDraft(d)
+      // 默认只展开第一集；已手动开合过的保持原状
+      setOpen((o) => {
+        const n = { ...o }
+        cs.forEach((c, i) => { if (n[c.id] === undefined) n[c.id] = i === 0 })
+        return n
+      })
     }).catch(() => setMsg('剧本加载失败'))
   }
   useEffect(load, [project?.id])
 
   async function addChapter() {
     if (!project || !newText.trim()) return
+    const idx = chapters.length + 1
     setSaving('new'); setMsg('')
     try {
-      await api.createChapter(project.id, chapters.length + 1, `第${chapters.length + 1}集`, newText.trim())
-      setNewText(''); load()
+      await api.createChapter(project.id, idx, `第${idx}集`, newText.trim())
+      setNewText('')
+      // 后端 commit-after-yield：创建后立刻回读可能查不到新章节，轮询到出现为止
+      for (let i = 0; i < 10; i++) {
+        const cs = await api.chapters(project.id)
+        if (cs.some((c) => c.index === idx)) break
+        await new Promise((r) => setTimeout(r, 700))
+      }
+      load()
     } catch (e: any) { setMsg(e?.message || '创建失败') } finally { setSaving('') }
   }
   async function save(c: Chapter) {
@@ -58,16 +89,20 @@ export default function Script({ project }: { project: Project | null }) {
 
       {chapters.map((c) => (
         <div className="ep-block" key={c.id}>
-          <div className="ep-h">
+          <div className="ep-h fold" onClick={() => setOpen((o) => ({ ...o, [c.id]: !o[c.id] }))}>
+            <span className="ep-caret">{open[c.id] ? '▾' : '▸'}</span>
             <span className="ep-t">第 {c.index} 集 · {c.title}</span>
             <span className="ep-cnt">{(draft[c.id] || '').length} 字</span>
-            <button className="btn ghost" disabled={saving === c.id} onClick={() => save(c)}>
+            <button className="btn ghost" disabled={saving === c.id}
+              onClick={(e) => { e.stopPropagation(); save(c) }}>
               {saving === c.id ? '保存中…' : '保存'}
             </button>
           </div>
-          <textarea className="sc-area" value={draft[c.id] ?? ''}
-            onChange={(e) => setDraft((d) => ({ ...d, [c.id]: e.target.value }))}
-            placeholder="粘贴/编辑该集剧本正文（场景、动作、对白）…" />
+          {open[c.id] && (
+            <AutoArea className="sc-area" value={draft[c.id] ?? ''}
+              onChange={(e) => setDraft((d) => ({ ...d, [c.id]: e.target.value }))}
+              placeholder="粘贴/编辑该集剧本正文（场景、动作、对白）…" />
+          )}
         </div>
       ))}
 
@@ -77,7 +112,7 @@ export default function Script({ project }: { project: Project | null }) {
             {saving === 'new' ? '创建中…' : `保存为第 ${chapters.length + 1} 集`}
           </button>
         </div>
-        <textarea className="sc-area" value={newText} onChange={(e) => setNewText(e.target.value)}
+        <AutoArea className="sc-area" value={newText} onChange={(e) => setNewText(e.target.value)}
           placeholder={chapters.length === 0 ? '把《回声》这样的剧本正文粘贴到这里，保存后点右上角「从剧本抽取设定」自动抽出角色/场景/道具…' : '粘贴下一集剧本正文…'} />
       </div>
     </div>
