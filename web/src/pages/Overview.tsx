@@ -4,10 +4,10 @@ import { api, type Project } from '../lib/api'
 
 type Stats = { chapters: number; character: number; scene: number; prop: number; costume: number; actor: number; shots: number }
 
-const STAGES = [
+const STAGES: { to: string; label: string; desc: string; icon: string; main?: boolean }[] = [
   { to: '/script', label: '剧本', desc: '接原点产出 · 分集正文', icon: 'script' },
   { to: '/cast', label: '设定', desc: '角色/场景/道具/服装 + 造型图', icon: 'cast' },
-  { to: '/board', label: '分镜', desc: '镜头级时序 · 景别机位', icon: 'board' },
+  { to: '/board', label: '分镜', desc: '镜头级时序 · 景别机位', icon: 'board', main: true },
   { to: '/frames', label: '画面', desc: '首/关/尾帧 · 图生视频', icon: 'frames' },
   { to: '/gallery', label: '总览', desc: '全集画面一览', icon: 'gallery' },
 ]
@@ -87,10 +87,11 @@ export default function Overview({ project, onRatioChange }: { project: Project 
       <div className="ov-stages-h">进入创作阶段</div>
       <div className="ov-stages">
         {STAGES.map((s) => (
-          <div className="ov-stage" key={s.to} onClick={() => navigate(s.to)}>
+          <div className={s.main ? 'ov-stage main' : 'ov-stage'} key={s.to} onClick={() => navigate(s.to)}>
             <div className="os-icon"><SIcon n={s.icon} /></div>
             <div className="os-label">{s.label}</div>
             <div className="os-desc">{s.desc}</div>
+            {s.main && <span className="os-go">继续</span>}
           </div>
         ))}
       </div>
