@@ -1,6 +1,6 @@
 """GLM 客户端（OpenAI 兼容，标准库）。key 取 env GLM_API_KEY 或同目录 .glm_key。"""
 from __future__ import annotations
-import json, os, re, urllib.request
+import json, os, re, time, urllib.error, urllib.request
 from pathlib import Path
 
 BASE = "https://open.bigmodel.cn/api/paas/v4"
@@ -49,6 +49,20 @@ def chat_json(system: str, user: str, *, model: str = "glm-4.6", temperature: fl
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 resp = json.loads(r.read())
             return _extract_json(resp["choices"][0]["message"]["content"])
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode()[:200]
+            except Exception:
+                detail = ""
+            if e.code == 429:  # 账户速率限制：退避等待再试，不能立刻重试（会持续触发限流）
+                last = SystemExit(f"GLM 速率限制(429)，账户请求过频/配额收紧：{detail}")
+                if attempt < retries:
+                    wait = 30 * (attempt + 1)
+                    print(f"  GLM 429 速率限制，退避 {wait}s 后重试 {attempt + 1}/{retries}…", flush=True)
+                    time.sleep(wait)
+                    continue
+                raise last
+            raise SystemExit(f"GLM HTTP {e.code}：{detail}")
         except (TimeoutError, urllib.error.URLError, ConnectionError) as e:  # 瞬时网络/读超时才重试
             last = e
             if attempt < retries:
