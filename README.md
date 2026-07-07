@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="shotcat logo" width="520">
+</p>
+
 # shotcat 🎬
 
 > plotcat 写故事，**shotcat** 拍故事。—— plotcat 系列的短剧生产层（猫叔的短剧工作台）
@@ -12,7 +16,7 @@
 
 ## 结构
 ```
-duanju-studio/
+shotcat/
 ├── app/          平台 底座（生产平台：分镜/资产/关键帧/图生视频，React+FastAPI）
 ├── bridge/       剧本接入桥（story-bible.json → 平台 项目+造型资产+文字分镜）
 ├── knowledge/    story-bible.schema.v1.json = 与原点的交接契约（其余知识库为写作侧参考，本工具不用）
@@ -32,3 +36,15 @@ duanju-studio/
 ## 启动 平台
 `cd app/deploy/compose && docker compose --env-file .env -f docker-compose.yml up -d`
 前端 http://localhost:7788 ｜ 后端 http://localhost:8000
+
+## 作者
+
+本系统（shotcat / 短剧生产工作台）由云一工作室主理人 **猫叔** 独立开发。
+仓库地址：<https://github.com/mmlong818/shotcat>
+姊妹项目：[plotcat / 原点编剧系统](https://github.com/mmlong818/plotcat)（写故事的那一半）
+
+## 许可证
+
+[PolyForm Noncommercial 1.0.0](LICENSE) —— 允许个人使用、学习、修改和非商业分发；**不允许任何商业用途**。
+
+> Required Notice: Copyright © 2026 猫叔 (<https://github.com/mmlong818/shotcat>)
