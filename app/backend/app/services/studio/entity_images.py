@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.utils import apply_order, paginate
 from app.models.studio import CharacterImage
 from app.services.common import entity_not_found
+from app.services.studio.entity_image_names import resolve_entity_image_default_names
 from app.services.studio.entity_specs import entity_spec, normalize_entity_type
 
 IMAGE_ORDER_FIELDS = {"id", "quality_level", "view_angle", "created_at", "updated_at"}
@@ -42,7 +43,13 @@ async def list_entity_images_paginated(
         default="id",
     )
     items, total = await paginate(db, stmt=stmt, page=page, page_size=page_size)
-    payload = [spec.image_read_model.model_validate(x).model_dump() for x in items]
+    default_names = await resolve_entity_image_default_names(db, entity_type=entity_type, image_rows=items)
+
+    payload = []
+    for item in items:
+        data = spec.image_read_model.model_validate(item).model_dump()
+        data["name"] = default_names.get(int(item.id), "")
+        payload.append(data)
     return payload, total
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """镜头级分镜：把剧本按【镜头】(不是场景)拆解——一个场景含多个镜头
-(建立/过肩/特写/插入/反应…)。写进 shots + shot_details，并映射到场景实体。
+(建立/特写/插入/反应/正反打…)。写进 shots + shot_details，并映射到场景实体。
 时长由内容决定，不锁固定秒数。
 用法：python shot_breakdown.py <project_id> [--model glm-4.6]
 （会替换该项目章节内的现有镜头，先用 clear_shots 清旧镜头再跑）
@@ -12,17 +12,17 @@ from glm import chat_json
 from http_util import get_all
 
 SHOTS = "ECU 大特写 / CU 特写 / MCU 中近景 / MS 中景 / MLS 中远景 / LS 远景 / ELS 大远景"
-ANGLES = "EYE_LEVEL 平视 / HIGH_ANGLE 俯 / LOW_ANGLE 仰 / BIRD_EYE 鸟瞰 / DUTCH 荷兰式 / OVER_SHOULDER 过肩"
-MOVES = "STATIC 固定 / PAN 横摇 / TILT 纵摇 / DOLLY_IN 推 / DOLLY_OUT 拉 / TRACK 跟移 / CRANE 摇臂 / HANDHELD 手持 / STEADICAM 稳定器 / ZOOM_IN 变焦推 / ZOOM_OUT 变焦拉"
+ANGLES = "EYE_LEVEL 平视 / HIGH_ANGLE 俯 / LOW_ANGLE 仰 / BIRD_EYE 鸟瞰 / DUTCH 荷兰式"
+MOVES = "STATIC 固定 / PAN 横向取景 / TILT 纵向取景 / DOLLY_IN 紧构图 / DOLLY_OUT 宽构图 / TRACK 跟随关系 / CRANE 高角度 / HANDHELD 现场感 / STEADICAM 稳定取景 / ZOOM_IN 紧构图 / ZOOM_OUT 宽构图"
 
 SYS = f"""你是专业分镜师。把剧本拆成【镜头级】分镜。
-铁律：一个场景通常包含多个镜头（建立镜头/主镜头/过肩/正反打/特写/插入镜头/反应镜头/切出等），
+铁律：一个场景通常包含多个镜头（建立镜头/主镜头/正反打/特写/插入镜头/反应镜头/切出等），
 绝不能一个场景只给一个镜头。按合理的视觉叙事节奏切分，时长由内容决定，不锁固定秒数。
 
 镜头搭配参考：
 - 进入新场景先给建立镜头(LS/ELS)交代空间；
-- 对话用 过肩(OVER_SHOULDER)+正反打，情绪点切人物特写(CU/ECU)反应；
-- 关键物件给插入特写(CU/ECU)；情绪爆发可推镜(DOLLY_IN/ZOOM_IN)。
+- 对话用稳定平视/轻侧面正反打，情绪点切人物特写(CU/ECU)反应；
+- 关键物件给插入特写(CU/ECU)；情绪爆发可用更紧的静态构图或特写强化。
 
 每个镜头字段：
 - scene：所属场景名（必须用给定场景名之一）
@@ -31,30 +31,35 @@ SYS = f"""你是专业分镜师。把剧本拆成【镜头级】分镜。
 - title：该镜头一句话动作概述（≤16字）
 - camera_shot：景别代码，仅用 [{SHOTS}] 的英文代码(如 CU)
 - angle：机位代码，仅用 [{ANGLES}] 的英文代码
-- movement：运镜代码，仅用 [{MOVES}] 的英文代码
+- movement：镜头取景建议代码，仅用 [{MOVES}] 的英文代码；这里只是给后续静态构图参考，不要在 action/description 里写推进、移动、跟拍、横摇等视频动作词
 - action：**镜头里看见什么**：画面主体是谁/什么、空间位置关系（前座/后座、左/右、前景/背景）、正在发生的动作。
   写"画面"不写"剧情"；无人物的空镜必须以"空镜："开头（如"空镜：雨点砸在挡风玻璃上，雨刮器静止"）
+- 不要按场景常识添加随身物件：书包、背包、手机、雨伞、购物袋、杯子等，只有原文明确出现、当前镜头动作正在使用、或属于关键道具时才写入。
+- 不要写肩部、肩背、借肩、前景肩部遮挡等构图；双人关系改用横向构图、高角度构图、平视轻侧面、双人同框、前后景距离或左右站位。
+- description：**镜头画面描述**：补齐这一镜头最终要生成的画面，必须写清景别、主体、主体在画面中的位置、场景空间、关键道具/环境元素、光线和情绪；不要写剧情总结。
+- reference_relations：**参考图关系**：说明本镜头生图时各类参考图怎么用，只写本镜头实际需要的关系。例如：角色参考图用于外貌/发型/服装一致；场景参考图用于空间结构/材质/光线一致；道具参考图用于外观/尺寸/细节一致。
 - dialogue：该镜头对白原文，无则空字符串
 - duration：建议秒数(整数)。有对白的镜头必须容纳朗读时间：常规语速每秒 4 字（慢速抒情戏每秒 3 字），
   即 duration ≥ 对白字数÷4，再加动作/反应的余量
-- characters：**画面中出现的所有角色**名数组（不是"镜头主体"）：过肩镜头必须包含被借肩的背影角色；
+- characters：**画面中出现的所有角色**名数组（不是"镜头主体"）：
   双人同框(对峙/对坐/并行)必须两人都列；只有画外音/完全不在画内才不列
 
 【镜头语言多样性硬约束（必须满足，先规划配比再输出）】
-1. 固定机位(STATIC)占比不得超过全片镜头的 40%；其余用运动镜头(PAN/TILT/DOLLY_IN/DOLLY_OUT/TRACK/CRANE/HANDHELD/ZOOM_IN/ZOOM_OUT)。
-2. 每进入一个新场景，其建立镜头必须是运动镜头(优先 DOLLY_IN/TRACK/PAN/CRANE)交代空间，不得用 STATIC。
-3. 每一组双人对话，必须至少包含一组过肩正反打：两个相邻镜头 angle 均为 OVER_SHOULDER 且互为反打。
+1. 固定取景(STATIC)占比不得超过全片镜头的 40%；其余用不同静态取景建议(PAN/TILT/DOLLY_IN/DOLLY_OUT/TRACK/CRANE/HANDHELD/ZOOM_IN/ZOOM_OUT)变化构图，但 action/description 不得写成运动过程。
+2. 每进入一个新场景，其建立镜头优先使用横向广角、高角度或宽构图交代空间。
+3. 每一组双人对话，至少包含一组稳定正反打或双人关系镜头；不得使用 OVER_SHOULDER，优先 EYE_LEVEL 或轻侧面构图，并明确左右站位。
 4. 机位角度不得全程 EYE_LEVEL：压迫/俯视用 HIGH_ANGLE，弱势/仰望用 LOW_ANGLE，情绪失衡可用 DUTCH。
-5. 情绪爆点或信息落点镜头，用推镜(DOLLY_IN)或特写(CU/ECU)强化。"""
+5. 情绪爆点或信息落点镜头，用更紧的静态构图或特写(CU/ECU)强化。"""
 
 USER_TMPL = """【完整剧本】
 {script}
 
 【本项目场景（scene 字段须用这些名）】{scenes}
 【角色】{chars}
+【道具】{props}
 
 把全剧本拆成镜头级分镜。短片每个场景一般 3-6 个镜头。
-输出 JSON：{{"shots":[{{"scene":"","time":"日","space":"内","title":"","camera_shot":"","angle":"","movement":"","action":"","dialogue":"","duration":6,"characters":[]}}]}}"""
+输出 JSON：{{"shots":[{{"scene":"","time":"日","space":"内","title":"","camera_shot":"","angle":"","movement":"","action":"","description":"","reference_relations":"","dialogue":"","duration":6,"characters":[]}}]}}"""
 
 BASE = "http://localhost:8000/api/v1"
 
@@ -116,13 +121,17 @@ def run(pid: str, model: str):
         raise SystemExit("项目无剧本正文，请先在剧本页粘贴剧本（避免空剧本白调 GLM）")
     scenes = items(f"/studio/entities/scene?project_id={pid}&page_size=100")
     chars = items(f"/studio/entities/character?project_id={pid}&page_size=100")
+    props = items(f"/studio/entities/prop?project_id={pid}&page_size=100")
     scene_id_by_name = {s["name"]: s["id"] for s in scenes}
     char_id_by_name = {c["name"]: c["id"] for c in chars}
 
     print(f"[镜头级分镜] 项目 {pid}｜章节 {ch['id']}｜场景 {len(scenes)}｜模型 {model}")
     print("  GLM 拆镜头中…")
     data = chat_json(SYS, USER_TMPL.format(
-        script=script, scenes="、".join(scene_id_by_name), chars="、".join(c["name"] for c in chars),
+        script=script,
+        scenes="、".join(scene_id_by_name),
+        chars="、".join(c["name"] for c in chars),
+        props="、".join(p["name"] for p in props),
     ), model=model, temperature=0.6, timeout=300)
     shots = data.get("shots", [])
     if not shots:
@@ -142,6 +151,15 @@ def run(pid: str, model: str):
         act = (s.get("action") or "").strip()
         if not (s.get("characters") or []) and act and not act.startswith("空镜"):
             s["action"] = "空镜：" + act
+
+        desc = (s.get("description") or "").strip()
+        if not desc:
+            desc = act
+        rel = (s.get("reference_relations") or "").strip()
+        desc_parts = [f"画面描述：{desc}"] if desc else []
+        if rel:
+            desc_parts.append(f"参考图关系：{rel}")
+        s["description"] = "\n".join(desc_parts)
 
     # 校验通过后再清该章节现有镜头(可重跑)：先删 detail 再删 shot；任一失败即中止，不谎报已清除
     old = items(f"/studio/shots?chapter_id={ch['id']}")
@@ -178,6 +196,7 @@ def run(pid: str, model: str):
                 s.get("action"),
                 (lambda d: d and (d if d.startswith("「") else f"「{d}」"))((s.get("dialogue") or "").strip()),
             ] if b],
+            "description": s.get("description", ""),
             # 场次时间/内外景：ShotDetail 无专用字段，按 "时:X"/"景:X" 约定存 mood_tags
             # （mood_tags 会进帧提示词链，时间与内外景本身也是画面生成的关键信息）
             "mood_tags": [t for t in [

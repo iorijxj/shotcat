@@ -6,12 +6,21 @@ from __future__ import annotations
 将任务与上层业务实体（演员形象/道具/场景/服装/角色/镜头分镜帧）建立关联。
 """
 
+import asyncio
+import threading
+import time
+import uuid
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.contracts.image_generation import ImageResolutionProfile, ImageTargetRatio
+from app.core.db import async_session_maker
+from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
+from app.core.task_manager.types import TaskStatus
 from app.dependencies import get_db
 from app.models.studio import (
     ShotDetail,
@@ -20,7 +29,8 @@ from app.models.studio import (
 )
 from app.schemas.common import ApiResponse, created_response, success_response
 from app.schemas.studio.shots import RenderedShotFramePromptRead, ShotLinkedAssetItem
-from app.api.v1.routes.film.common import TaskCreated
+from app.api.v1.routes.film.common import TaskCreated, _CreateOnlyTask
+from app.models.task_links import GenerationTaskLink
 from app.services.studio.image_task_references import (
     resolve_reference_image_refs_by_file_ids as _resolve_reference_image_refs_by_file_ids_service,
 )
@@ -40,14 +50,35 @@ from app.services.studio.generation.frame import (
     build_frame_submission_payload as _build_frame_submission_payload_service,
     derive_frame_preview as _derive_frame_preview_service,
 )
-from app.services.film.shot_frame_prompt_tasks import build_run_args as _build_shot_frame_prompt_run_args_service
+from app.services.film.shot_frame_prompt_tasks import (
+    build_run_args as _build_shot_frame_prompt_run_args_service,
+    normalize_frame_type as _normalize_frame_type_service,
+    relation_type_for_frame as _relation_type_for_frame_service,
+)
+from app.services.studio.shot_status import mark_shot_generating as _mark_shot_generating_service
 from app.services.studio.generation.frame.derive_preview import (
     to_rendered_shot_frame_prompt_read as _to_rendered_shot_frame_prompt_read_service,
 )
 from app.services.studio.image_task_runner import create_image_task_and_link as _create_image_task_and_link_service
+from app.tasks.execute_task import enqueue_task_execution
 
 
 router = APIRouter()
+
+
+_BATCH_LOCK = threading.Lock()
+_ASSET_IMAGE_BATCHES: dict[str, dict] = {}
+_FRAME_IMAGE_BATCHES: dict[str, dict] = {}
+_TERMINAL_TASK_STATUSES = {TaskStatus.succeeded, TaskStatus.failed, TaskStatus.cancelled}
+
+
+def _scene_empty_prompt(prompt: str) -> str:
+    text = prompt.strip()
+    if not text:
+        return text
+    if "空无一人" in text or "无人" in text:
+        return text
+    return f"空无一人的{text}"
 
 
 class StudioImageTaskRequest(BaseModel):
@@ -78,6 +109,71 @@ class StudioImageTaskRequest(BaseModel):
         default_factory=list,
         description="参考图 file_id 列表（可多张，顺序有效）。创建任务接口会基于 file_id 从数据中解析为参考图",
     )
+
+
+class AssetImageBatchItem(BaseModel):
+    type: Literal["character", "actor", "scene", "prop", "costume"]
+    id: str
+    name: str = ""
+    image_id: int
+    prompt: str = Field(..., min_length=1)
+
+
+class AssetImageBatchRequest(BaseModel):
+    items: list[AssetImageBatchItem] = Field(default_factory=list)
+    model_id: str | None = None
+
+
+class AssetImageBatchCreated(BaseModel):
+    batch_id: str
+    total: int
+
+
+class AssetImageBatchStatus(BaseModel):
+    batch_id: str
+    status: str
+    total: int
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    current: str = ""
+    current_task_id: str | None = None
+    error: str = ""
+    items: list[dict] = Field(default_factory=list)
+
+
+class FrameImageBatchItem(BaseModel):
+    shot_id: str
+    name: str = ""
+    frame_type: ShotFrameType = Field("key", description="first | key | last")
+    images: list[ShotLinkedAssetItem] = Field(default_factory=list)
+
+
+class FrameImageBatchRequest(BaseModel):
+    items: list[FrameImageBatchItem] = Field(default_factory=list)
+    model_id: str | None = None
+    target_ratio: ImageTargetRatio = "9:16"
+    resolution_profile: ImageResolutionProfile | None = "standard"
+
+
+class FrameImageBatchCreated(BaseModel):
+    batch_id: str
+    total: int
+
+
+class FrameImageBatchStatus(BaseModel):
+    batch_id: str
+    status: str
+    total: int
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    current: str = ""
+    current_task_id: str | None = None
+    error: str = ""
+    items: list[dict] = Field(default_factory=list)
 
 
 class ShotFrameImageTaskRequest(BaseModel):
@@ -168,6 +264,500 @@ async def _load_frame_render_guidance(
     }
 
 
+async def _create_shot_frame_prompt_task_internal(*, shot_id: str, frame_type: ShotFrameType) -> str:
+    frame_type_value = _normalize_frame_type_service(frame_type.value if hasattr(frame_type, "value") else str(frame_type))
+    async with async_session_maker() as db:
+        store = SqlAlchemyTaskStore(db)
+        tm = TaskManager(store=store, strategies={})
+        run_args = await _build_shot_frame_prompt_run_args_service(
+            db,
+            shot_id=shot_id,
+            frame_type=frame_type_value,
+        )
+        task_record = await tm.create(
+            task=_CreateOnlyTask(),
+            mode=DeliveryMode.async_polling,
+            task_kind="shot_frame_prompt",
+            run_args=run_args,
+        )
+        db.add(
+            GenerationTaskLink(
+                task_id=task_record.id,
+                resource_type="prompt",
+                relation_type=_relation_type_for_frame_service(frame_type_value),
+                relation_entity_id=shot_id,
+            )
+        )
+        await _mark_shot_generating_service(db, shot_id=shot_id)
+        await db.commit()
+        enqueue_task_execution(task_record.id)
+        return task_record.id
+
+
+async def _read_task_result(task_id: str) -> dict:
+    async with async_session_maker() as db:
+        record = await SqlAlchemyTaskStore(db).get(task_id)
+        return dict(record.result or {}) if record is not None else {}
+
+
+async def _create_shot_frame_image_task_internal(
+    *,
+    db: AsyncSession,
+    shot_id: str,
+    frame_type: ShotFrameType,
+    prompt: str,
+    images: list[ShotLinkedAssetItem],
+    model_id: str | None,
+    target_ratio: ImageTargetRatio,
+    resolution_profile: ImageResolutionProfile | None,
+) -> str:
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="prompt is required for shot frame generation",
+        )
+    shot_detail = await db.get(ShotDetail, shot_id)
+    if shot_detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ShotDetail not found")
+    render_guidance = await _load_frame_render_guidance(
+        db=db,
+        shot_id=shot_id,
+        frame_type=frame_type,
+    )
+    base = _build_frame_base_draft_service(
+        shot_id=shot_id,
+        frame_type=frame_type,
+        prompt=prompt,
+        director_command_summary=render_guidance["director_command_summary"],
+        continuity_guidance=render_guidance["continuity_guidance"],
+        frame_specific_guidance=render_guidance["frame_specific_guidance"],
+        composition_anchor=render_guidance["composition_anchor"],
+        screen_direction_guidance=render_guidance["screen_direction_guidance"],
+    )
+    context = _build_frame_context_service(
+        shot_id=shot_id,
+        frame_type=frame_type,
+        items=images,
+    )
+    submission = _build_frame_submission_payload_service(
+        base=base,
+        context=context,
+    )
+    ref_images = await _resolve_reference_image_refs_by_file_ids_service(db, file_ids=submission.images)
+
+    shot_frame_image_stmt = (
+        select(ShotFrameImage)
+        .where(ShotFrameImage.shot_detail_id == shot_id, ShotFrameImage.frame_type == frame_type)
+        .limit(1)
+    )
+    shot_frame_image = (await db.execute(shot_frame_image_stmt)).scalars().first()
+    if shot_frame_image is None:
+        shot_frame_image = ShotFrameImage(
+            shot_detail_id=shot_id,
+            frame_type=frame_type,
+            file_id=None,
+            width=None,
+            height=None,
+            format="png",
+        )
+        db.add(shot_frame_image)
+        await db.flush()
+        await db.refresh(shot_frame_image)
+    elif not shot_frame_image.format:
+        shot_frame_image.format = "png"
+
+    submission_extra = dict(submission.extra or {})
+    return await _create_image_task_and_link_service(
+        db=db,
+        model_id=model_id,
+        relation_type="shot_frame_image",
+        relation_entity_id=str(shot_frame_image.id),
+        prompt=submission.prompt,
+        images=ref_images if ref_images else None,
+        target_ratio=target_ratio,
+        resolution_profile=resolution_profile,
+        purpose="video_reference",
+        render_context=submission_extra.get("render_context"),
+    )
+
+
+def _batch_snapshot(batch_id: str) -> dict | None:
+    with _BATCH_LOCK:
+        batch = _ASSET_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return None
+        return {
+            **batch,
+            "items": [dict(x) for x in batch.get("items", [])],
+        }
+
+
+def _batch_update(batch_id: str, **patch: object) -> None:
+    with _BATCH_LOCK:
+        batch = _ASSET_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return
+        batch.update(patch)
+        items = batch.get("items", [])
+        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
+        batch["running"] = sum(1 for x in items if x.get("status") == "running")
+        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
+        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+
+
+def _batch_item_update(batch_id: str, index: int, **patch: object) -> None:
+    with _BATCH_LOCK:
+        batch = _ASSET_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return
+        items = batch.get("items", [])
+        if index < 0 or index >= len(items):
+            return
+        items[index].update(patch)
+        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
+        batch["running"] = sum(1 for x in items if x.get("status") == "running")
+        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
+        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+
+
+def _frame_batch_snapshot(batch_id: str) -> dict | None:
+    with _BATCH_LOCK:
+        batch = _FRAME_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return None
+        return {
+            **batch,
+            "items": [dict(x) for x in batch.get("items", [])],
+        }
+
+
+def _frame_batch_update(batch_id: str, **patch: object) -> None:
+    with _BATCH_LOCK:
+        batch = _FRAME_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return
+        batch.update(patch)
+        items = batch.get("items", [])
+        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
+        batch["running"] = sum(1 for x in items if x.get("status") == "running")
+        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
+        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+
+
+def _frame_batch_item_update(batch_id: str, index: int, **patch: object) -> None:
+    with _BATCH_LOCK:
+        batch = _FRAME_IMAGE_BATCHES.get(batch_id)
+        if batch is None:
+            return
+        items = batch.get("items", [])
+        if index < 0 or index >= len(items):
+            return
+        items[index].update(patch)
+        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
+        batch["running"] = sum(1 for x in items if x.get("status") == "running")
+        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
+        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+
+
+async def _wait_generation_task(task_id: str, *, timeout_s: float = 900.0) -> TaskStatus:
+    deadline = time.monotonic() + timeout_s
+    async with async_session_maker() as db:
+        store = SqlAlchemyTaskStore(db)
+        last_status = TaskStatus.pending
+        while time.monotonic() < deadline:
+            view = await store.get_status_view(task_id)
+            if view is not None:
+                last_status = view.status
+                if view.status in _TERMINAL_TASK_STATUSES:
+                    return view.status
+            await asyncio.sleep(2.0)
+        return last_status
+
+
+async def _create_asset_batch_item_task(item: AssetImageBatchItem, *, model_id: str | None) -> str:
+    prompt = _scene_empty_prompt(item.prompt) if item.type == "scene" else item.prompt.strip()
+    if not prompt:
+        raise ValueError("prompt is required")
+    async with async_session_maker() as db:
+        if item.type == "character":
+            submission = await _build_character_image_submission_payload_service(
+                db,
+                character_id=item.id,
+                image_id=item.image_id,
+                prompt=prompt,
+                images=[],
+            )
+        elif item.type == "actor":
+            submission = await _build_actor_image_submission_payload_service(
+                db,
+                actor_id=item.id,
+                image_id=item.image_id,
+                prompt=prompt,
+                images=[],
+            )
+        else:
+            submission = await _build_asset_image_submission_payload_service(
+                db,
+                asset_type=item.type,
+                asset_id=item.id,
+                image_id=item.image_id,
+                prompt=prompt,
+                images=[],
+            )
+        return await _create_image_task_and_link_service(
+            db=db,
+            model_id=model_id,
+            relation_type=submission.relation_type,
+            relation_entity_id=submission.relation_entity_id,
+            prompt=submission.prompt,
+            images=None,
+            target_ratio="16:9",
+        )
+
+
+async def _run_asset_image_batch(batch_id: str, items: list[AssetImageBatchItem], *, model_id: str | None) -> None:
+    _batch_update(batch_id, status="running", current="")
+    for index, item in enumerate(items):
+        label = item.name or item.id
+        _batch_update(batch_id, current=label)
+        _batch_item_update(batch_id, index, status="running", error="")
+        try:
+            task_id = await _create_asset_batch_item_task(item, model_id=model_id)
+            _batch_update(batch_id, current_task_id=task_id)
+            _batch_item_update(batch_id, index, task_id=task_id)
+            task_status = await _wait_generation_task(task_id)
+            if task_status == TaskStatus.succeeded:
+                _batch_item_update(batch_id, index, status="succeeded")
+            else:
+                _batch_item_update(batch_id, index, status="failed", error=f"任务{task_status.value}")
+        except Exception as exc:  # noqa: BLE001
+            _batch_item_update(batch_id, index, status="failed", error=str(exc))
+    snapshot = _batch_snapshot(batch_id) or {}
+    failed = int(snapshot.get("failed") or 0)
+    _batch_update(
+        batch_id,
+        status="failed" if failed else "succeeded",
+        current="",
+        current_task_id=None,
+        error=f"{failed} 项生成失败" if failed else "",
+    )
+
+
+def _spawn_asset_image_batch(batch_id: str, items: list[AssetImageBatchItem], *, model_id: str | None) -> None:
+    def runner() -> None:
+        asyncio.run(_run_asset_image_batch(batch_id, items, model_id=model_id))
+
+    threading.Thread(target=runner, daemon=True).start()
+
+
+async def _create_frame_batch_item_task(
+    item: FrameImageBatchItem,
+    *,
+    model_id: str | None,
+    target_ratio: ImageTargetRatio,
+    resolution_profile: ImageResolutionProfile | None,
+) -> str:
+    prompt_task_id = await _create_shot_frame_prompt_task_internal(
+        shot_id=item.shot_id,
+        frame_type=item.frame_type,
+    )
+    prompt_status = await _wait_generation_task(prompt_task_id, timeout_s=300.0)
+    if prompt_status != TaskStatus.succeeded:
+        raise RuntimeError(f"prompt task {prompt_status.value}")
+    result = await _read_task_result(prompt_task_id)
+    prompt = str(result.get("prompt") or "").strip()
+    if not prompt:
+        raise RuntimeError("prompt task returned empty prompt")
+    async with async_session_maker() as db:
+        return await _create_shot_frame_image_task_internal(
+            db=db,
+            shot_id=item.shot_id,
+            frame_type=item.frame_type,
+            prompt=prompt,
+            images=item.images,
+            model_id=model_id,
+            target_ratio=target_ratio,
+            resolution_profile=resolution_profile,
+        )
+
+
+async def _run_frame_image_batch(
+    batch_id: str,
+    items: list[FrameImageBatchItem],
+    *,
+    model_id: str | None,
+    target_ratio: ImageTargetRatio,
+    resolution_profile: ImageResolutionProfile | None,
+) -> None:
+    _frame_batch_update(batch_id, status="running", current="")
+    for index, item in enumerate(items):
+        label = item.name or item.shot_id
+        _frame_batch_update(batch_id, current=label)
+        _frame_batch_item_update(batch_id, index, status="running", error="")
+        try:
+            task_id = await _create_frame_batch_item_task(
+                item,
+                model_id=model_id,
+                target_ratio=target_ratio,
+                resolution_profile=resolution_profile,
+            )
+            _frame_batch_update(batch_id, current_task_id=task_id)
+            _frame_batch_item_update(batch_id, index, task_id=task_id)
+            task_status = await _wait_generation_task(task_id)
+            if task_status == TaskStatus.succeeded:
+                _frame_batch_item_update(batch_id, index, status="succeeded")
+            else:
+                _frame_batch_item_update(batch_id, index, status="failed", error=f"任务{task_status.value}")
+        except Exception as exc:  # noqa: BLE001
+            _frame_batch_item_update(batch_id, index, status="failed", error=str(exc))
+    snapshot = _frame_batch_snapshot(batch_id) or {}
+    failed = int(snapshot.get("failed") or 0)
+    _frame_batch_update(
+        batch_id,
+        status="failed" if failed else "succeeded",
+        current="",
+        current_task_id=None,
+        error=f"{failed} 项生成失败" if failed else "",
+    )
+
+
+def _spawn_frame_image_batch(
+    batch_id: str,
+    items: list[FrameImageBatchItem],
+    *,
+    model_id: str | None,
+    target_ratio: ImageTargetRatio,
+    resolution_profile: ImageResolutionProfile | None,
+) -> None:
+    def runner() -> None:
+        asyncio.run(
+            _run_frame_image_batch(
+                batch_id,
+                items,
+                model_id=model_id,
+                target_ratio=target_ratio,
+                resolution_profile=resolution_profile,
+            )
+        )
+
+    threading.Thread(target=runner, daemon=True).start()
+
+
+@router.post(
+    "/asset-batches",
+    response_model=ApiResponse[AssetImageBatchCreated],
+    status_code=status.HTTP_201_CREATED,
+    summary="批量排队生成设定页造型图",
+)
+async def create_asset_image_batch(
+    body: AssetImageBatchRequest,
+) -> ApiResponse[AssetImageBatchCreated]:
+    items = [item for item in body.items if item.prompt.strip()]
+    if not items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no items to generate")
+    batch_id = f"asset_batch_{uuid.uuid4().hex}"
+    with _BATCH_LOCK:
+        _ASSET_IMAGE_BATCHES[batch_id] = {
+            "batch_id": batch_id,
+            "status": "queued",
+            "total": len(items),
+            "queued": len(items),
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "current": "",
+            "current_task_id": None,
+            "error": "",
+            "items": [
+                {
+                    "type": item.type,
+                    "id": item.id,
+                    "name": item.name,
+                    "status": "queued",
+                    "task_id": None,
+                    "error": "",
+                }
+                for item in items
+            ],
+        }
+    _spawn_asset_image_batch(batch_id, items, model_id=body.model_id)
+    return created_response(AssetImageBatchCreated(batch_id=batch_id, total=len(items)))
+
+
+@router.get(
+    "/asset-batches/{batch_id}",
+    response_model=ApiResponse[AssetImageBatchStatus],
+    status_code=status.HTTP_200_OK,
+    summary="查询设定页造型图批量生成进度",
+)
+async def get_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchStatus]:
+    snapshot = _batch_snapshot(batch_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    return success_response(AssetImageBatchStatus.model_validate(snapshot))
+
+
+@router.post(
+    "/frame-batches",
+    response_model=ApiResponse[FrameImageBatchCreated],
+    status_code=status.HTTP_201_CREATED,
+    summary="批量排队生成镜头缺失画面",
+)
+async def create_frame_image_batch(
+    body: FrameImageBatchRequest,
+) -> ApiResponse[FrameImageBatchCreated]:
+    items = [item for item in body.items if item.shot_id.strip()]
+    if not items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no shots to generate")
+    batch_id = f"frame_batch_{uuid.uuid4().hex}"
+    with _BATCH_LOCK:
+        _FRAME_IMAGE_BATCHES[batch_id] = {
+            "batch_id": batch_id,
+            "status": "queued",
+            "total": len(items),
+            "queued": len(items),
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "current": "",
+            "current_task_id": None,
+            "error": "",
+            "items": [
+                {
+                    "shot_id": item.shot_id,
+                    "name": item.name,
+                    "frame_type": item.frame_type.value if hasattr(item.frame_type, "value") else str(item.frame_type),
+                    "status": "queued",
+                    "task_id": None,
+                    "error": "",
+                }
+                for item in items
+            ],
+        }
+    _spawn_frame_image_batch(
+        batch_id,
+        items,
+        model_id=body.model_id,
+        target_ratio=body.target_ratio,
+        resolution_profile=body.resolution_profile,
+    )
+    return created_response(FrameImageBatchCreated(batch_id=batch_id, total=len(items)))
+
+
+@router.get(
+    "/frame-batches/{batch_id}",
+    response_model=ApiResponse[FrameImageBatchStatus],
+    status_code=status.HTTP_200_OK,
+    summary="查询镜头画面批量生成进度",
+)
+async def get_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchStatus]:
+    snapshot = _frame_batch_snapshot(batch_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    return success_response(FrameImageBatchStatus.model_validate(snapshot))
+
+
 
 @router.post(
     "/actors/{actor_id}/image-tasks",
@@ -182,6 +772,8 @@ async def create_actor_image_generation_task(
 ) -> ApiResponse[TaskCreated]:
     """为指定演员创建图片生成任务，并通过 `GenerationTaskLink` 关联。"""
     prompt = (body.prompt or "").strip()
+    if asset_type == "scene":
+        prompt = _scene_empty_prompt(prompt)
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -372,79 +964,15 @@ async def create_shot_frame_image_generation_task(
     db: AsyncSession = Depends(get_db),
 ) -> ApiResponse[TaskCreated]:
     """为镜头分镜帧图片生成任务（基于 `shot_id + frame_type` 自动定位数据）。"""
-    prompt = (body.prompt or "").strip()
-    if not prompt:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="prompt is required for shot frame generation",
-        )
-    shot_detail = await db.get(ShotDetail, shot_id)
-    if shot_detail is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ShotDetail not found")
-    render_guidance = await _load_frame_render_guidance(
+    task_id = await _create_shot_frame_image_task_internal(
         db=db,
         shot_id=shot_id,
         frame_type=body.frame_type,
-    )
-    base = _build_frame_base_draft_service(
-        shot_id=shot_id,
-        frame_type=body.frame_type,
-        prompt=prompt,
-        director_command_summary=render_guidance["director_command_summary"],
-        continuity_guidance=render_guidance["continuity_guidance"],
-        frame_specific_guidance=render_guidance["frame_specific_guidance"],
-        composition_anchor=render_guidance["composition_anchor"],
-        screen_direction_guidance=render_guidance["screen_direction_guidance"],
-    )
-    context = _build_frame_context_service(
-        shot_id=shot_id,
-        frame_type=body.frame_type,
-        items=body.images,
-    )
-    submission = _build_frame_submission_payload_service(
-        base=base,
-        context=context,
-    )
-    ref_images = await _resolve_reference_image_refs_by_file_ids_service(db, file_ids=submission.images)
-
-    # 通过 shot_id 与 frame_type 定位 ShotFrameImage，作为落库目标；若不存在则创建占位记录。
-    shot_frame_image_stmt = (
-        select(ShotFrameImage)
-        .where(ShotFrameImage.shot_detail_id == shot_id, ShotFrameImage.frame_type == body.frame_type)
-        .limit(1)
-    )
-    shot_frame_image = (await db.execute(shot_frame_image_stmt)).scalars().first()
-    if shot_frame_image is None:
-        # 缺少对应 frame_type 的 ShotFrameImage slot：创建占位记录（file_id 允许为空）。
-        # 后续图片生成完成后会覆盖写回 file_id。
-        shot_frame_image = ShotFrameImage(
-            shot_detail_id=shot_id,
-            frame_type=body.frame_type,
-            file_id=None,
-            width=None,
-            height=None,
-            format="png",
-        )
-        db.add(shot_frame_image)
-        await db.flush()
-        await db.refresh(shot_frame_image)
-    else:
-        # 已存在则补齐默认字段（不改写 file_id）。
-        if not shot_frame_image.format:
-            shot_frame_image.format = "png"
-
-    submission_extra = dict(submission.extra or {})
-    task_id = await _create_image_task_and_link_service(
-        db=db,
+        prompt=body.prompt,
+        images=body.images,
         model_id=body.model_id,
-        relation_type="shot_frame_image",
-        relation_entity_id=str(shot_frame_image.id),
-        prompt=submission.prompt,
-        images=ref_images if ref_images else None,
         target_ratio=body.target_ratio,
         resolution_profile=body.resolution_profile,
-        purpose="video_reference",
-        render_context=submission_extra.get("render_context"),
     )
     return created_response(TaskCreated(task_id=task_id))
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.schemas.studio.shots import FrameGuidanceDecisionRead, RenderedShotFramePromptRead, ShotFramePromptMappingRead
 from app.services.studio.generation.frame.build_base import FrameBaseDraft
 from app.services.studio.generation.frame.build_context import FrameGenerationContext
@@ -11,17 +13,8 @@ def replace_reference_names_in_prompt(
     base_prompt: str,
     mappings: list[ShotFramePromptMappingRead],
 ) -> str:
-    """将提示词中的实体名称替换为稳定的图片 token。"""
-    text = (base_prompt or "").strip()
-    replace_pairs = [
-        ((mapping.name or "").strip(), mapping.token)
-        for mapping in mappings
-        if (mapping.name or "").strip()
-    ]
-    replace_pairs.sort(key=lambda item: len(item[0]), reverse=True)
-    for name, token in replace_pairs:
-        text = text.replace(name, token)
-    return text
+    """保留实体原名，避免把可读提示词污染成“图1/图2”。"""
+    return (base_prompt or "").strip()
 
 
 def _score_frame_guidance_line(
@@ -267,20 +260,220 @@ def enrich_frame_prompt_with_guidance(
     composition_anchor: str,
     screen_direction_guidance: str,
 ) -> str:
-    """将高优先级导演约束补入最终图片提示词，避免只停留在调试展示。"""
-    text = (replaced_prompt or "").strip()
-    guidance_lines, _, _, _ = _collect_frame_guidance_lines(
-        frame_type=frame_type,
-        replaced_prompt=text,
-        director_command_summary=director_command_summary,
-        continuity_guidance=continuity_guidance,
-        frame_specific_guidance=frame_specific_guidance,
-        composition_anchor=composition_anchor,
-        screen_direction_guidance=screen_direction_guidance,
+    """最终生图 prompt 只保留可画内容；内部导演约束留在结构化 metadata 中。"""
+    return (replaced_prompt or "").strip()
+
+
+def _reference_relation_lines(mappings: list[ShotFramePromptMappingRead]) -> list[str]:
+    """把参考图关系压成可读短句，不使用图片编号。"""
+    if not mappings:
+        return []
+    label_by_type = {
+        "character": "角色参考",
+        "scene": "场景参考",
+        "prop": "道具参考",
+    }
+    use_by_type = {
+        "character": "保持外貌、发型与身份一致",
+        "scene": "保持空间结构、材质、陈设与光线一致",
+        "prop": "保持外观、尺寸、材质与文字细节一致",
+    }
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for mapping in mappings:
+        name = (mapping.name or "").strip()
+        if not name:
+            continue
+        key = (str(mapping.type), name)
+        if key in seen:
+            continue
+        seen.add(key)
+        label = label_by_type.get(str(mapping.type), "参考")
+        use = use_by_type.get(str(mapping.type), "保持设定一致")
+        lines.append(f"{label}：{name}，{use}。")
+    return lines
+
+
+def _strip_existing_reference_lines(prompt: str) -> str:
+    lines = []
+    for line in str(prompt or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("角色参考：", "场景参考：", "道具参考：", "参考：")):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _strip_character_clothing_when_referenced(prompt: str) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    clothing_words = r"(校服|制服|礼服|雨衣|工作服|服装|衣服|衣物|上衣|裤|裙|外套|衬衫|T恤|毛衣|风衣|夹克|鞋|靴)"
+    action_lookahead = r"(坐|站|走|蹲|背对|面对|回头|看|望|视线|手|拿|捏|压|拉|合|靠|位于|在|从|向|低垂|抬起|转向)"
+    # 保留“少年女主……坐在窗边”这类姿态动作，只删除中间服装片段。
+    text = re.sub(
+        rf"(身着|穿着|身穿|穿)[^，,；;。]*?{clothing_words}[^，,；;。]*?(?={action_lookahead})",
+        "",
+        text,
     )
-    if not guidance_lines:
-        return text
-    return "\n".join([*guidance_lines, text]).strip()
+    # 如果一个短句只剩“某角色穿某衣服”，整句没有姿态动作，就删除这段服装短句。
+    text = re.sub(
+        rf"[，,；;。\s]*[\u4e00-\u9fffA-Za-z0-9_·（）()]*?(身着|穿着|身穿|穿)[^，,；;。]*?{clothing_words}[^，,；;。]*",
+        "",
+        text,
+    )
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"^[，,；;。\s]+", "", text)
+    text = re.sub(r"[，,；;]\s*([。])", r"\1", text)
+    return text.strip()
+
+
+_INCIDENTAL_CARRIED_OBJECT_GROUPS = {
+    "bag": ("书包", "背包", "包带"),
+}
+
+_ACTIVE_OBJECT_VERBS = (
+    "打开",
+    "拉开",
+    "合上",
+    "翻",
+    "掏",
+    "取出",
+    "拿出",
+    "放进",
+    "塞进",
+    "塞入",
+    "露出",
+    "掉出",
+    "压住",
+    "抓住",
+    "拎起",
+)
+
+
+def _has_term_near_active_verb(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        for match in re.finditer(re.escape(term), text):
+            start = max(match.start() - 8, 0)
+            end = min(match.end() + 8, len(text))
+            window = text[start:end]
+            if any(verb in window for verb in _ACTIVE_OBJECT_VERBS):
+                return True
+    return False
+
+
+def _strip_incidental_carried_objects(
+    prompt: str,
+    *,
+    context_text: str,
+    prop_reference_names: list[str],
+) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    context = str(context_text or "")
+    prop_text = " ".join(prop_reference_names)
+    for terms in _INCIDENTAL_CARRIED_OBJECT_GROUPS.values():
+        has_story_evidence = any(term in context for term in terms)
+        has_prop_reference = any(term in prop_text for term in terms)
+        has_active_use = _has_term_near_active_verb(text, terms)
+        if has_story_evidence or has_prop_reference or has_active_use:
+            continue
+        text = re.sub(r"(背着|背着一只|背着一个|背|挎着|拎着)(书包|背包)", "", text)
+        text = re.sub(r"[，,；;。\s]*(书包|背包|包带)[^，,；;。]*(掠过|晃动|挂在|露在|背在|位于|出现在)[^，,；;。]*", "", text)
+        text = re.sub(r"[，,；;。\s]*(书包|背包|包带)[^，,；;。]*", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"^[，,；;。\s]+", "", text)
+    text = re.sub(r"[，,；;]\s*([。])", r"\1", text)
+    return text.strip()
+
+
+def _cleanup_static_image_language(prompt: str) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    replacements = {
+        "MCU过肩视角": "MCU中近景，稳定平视轻侧面构图",
+        "过肩视角": "稳定平视轻侧面构图",
+        "过肩镜头": "稳定平视轻侧面构图",
+        "前景左侧是虚化的男主肩背": "左侧前景保留教室空间层次",
+        "前景右侧是虚化的男主肩背": "右侧前景保留教室空间层次",
+        "前景左侧是虚化的女主肩背": "左侧前景保留教室空间层次",
+        "前景右侧是虚化的女主肩背": "右侧前景保留教室空间层次",
+        "虚化的男主肩背": "男主的侧向位置关系",
+        "虚化的女主肩背": "女主的侧向位置关系",
+        "前景肩部": "前景空间层次",
+        "肩背": "侧向位置关系",
+        "肩部": "侧向位置关系",
+        "镜头推进到": "静态取景朝向",
+        "推进到": "静态取景朝向",
+        "镜头推进": "画面构图更紧凑",
+        "推进": "构图更紧凑",
+        "推镜": "紧凑构图",
+        "拉远": "宽一些的静态构图",
+        "跟拍": "稳定静态取景",
+        "横摇": "横向广角构图",
+        "纵摇": "稳定静态构图",
+        "移动": "静态",
+        "运镜": "静态构图",
+        "镜头运动": "静态构图",
+        "缓缓": "",
+        "逐渐": "",
+        "正在变化": "",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    # 删除仍然包含肩部遮挡的短句，避免图像模型把身体局部画错。
+    text = re.sub(r"[，,；;。\s]*[^，,；;。]{0,18}(肩|肩背)[^，,；;。]{0,18}(遮挡|虚化|前景)[^，,；;。]*", "", text)
+    text = re.sub(r"[，,；;。\s]*[^，,；;。]*(DOLLY_IN|DOLLY_OUT|PAN|TILT|TRACK|HANDHELD|STEADICAM|ZOOM_IN|ZOOM_OUT)[^，,；;。]*", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"^[，,；;。\s]+", "", text)
+    text = re.sub(r"[，,；;]\s*([。])", r"\1", text)
+    return text.strip()
+
+
+def _cleanup_rendered_prompt_surface(
+    prompt: str,
+    *,
+    has_character_reference: bool = False,
+    context_text: str = "",
+    prop_reference_names: list[str] | None = None,
+) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    name_part = r"[\u4e00-\u9fffA-Za-z0-9_·（）()]{1,30}?"
+    text = re.sub(rf"(身着|穿着|身穿|穿){name_part}[-－_ ]默认服装[（(]([^）)]+)[）)]", r"\1\2", text)
+    text = re.sub(rf"(?<![\u4e00-\u9fffA-Za-z0-9_·（）()]){name_part}[-－_ ]默认服装[（(]([^）)]+)[）)]", r"\1", text)
+    text = re.sub(rf"(身着|穿着|身穿|穿){name_part}[-－_ ]默认服装", r"\1", text)
+    text = re.sub(rf"(?<![\u4e00-\u9fffA-Za-z0-9_·（）()]){name_part}[-－_ ]默认服装", "", text)
+    patterns = (
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认衣服",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认穿着",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?日常服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?普通服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?普通衣服",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?便装",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "", text)
+    text = text.replace("过肩视角", "平视轻侧面视角")
+    text = text.replace("过肩镜头", "平视轻侧面构图")
+    text = _cleanup_static_image_language(text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"^[，,；;。\s]+", "", text)
+    text = re.sub(r"^[和及与、\s]+", "", text)
+    text = re.sub(r"[和及与、\s]+([，,；;。])", r"\1", text)
+    text = re.sub(r"[，,；;]\s*([。])", r"\1", text)
+    if has_character_reference:
+        text = _strip_character_clothing_when_referenced(text)
+    text = _strip_incidental_carried_objects(
+        text,
+        context_text=context_text,
+        prop_reference_names=prop_reference_names or [],
+    )
+    return text.strip()
 
 
 def compose_shot_frame_rendered_prompt(
@@ -288,16 +481,19 @@ def compose_shot_frame_rendered_prompt(
     replaced_prompt: str,
     mappings: list[ShotFramePromptMappingRead],
 ) -> str:
-    """拼装最终提交给模型的关键帧提示词。"""
-    lines: list[str] = []
-    if mappings:
-        lines.append("## 图片内容说明")
-        for mapping in mappings:
-            lines.append(f"{mapping.token}: {mapping.name}")
-        lines.append("")
-    lines.append("## 生成内容")
-    lines.append((replaced_prompt or "").strip())
-    return "\n".join(lines).strip()
+    """拼装最终提交给模型的关键帧提示词，避免暴露内部调度说明。"""
+    has_character_reference = any(str(mapping.type) == "character" for mapping in mappings)
+    prop_reference_names = [(mapping.name or "").strip() for mapping in mappings if str(mapping.type) == "prop"]
+    lines = [
+        _cleanup_rendered_prompt_surface(
+            _strip_existing_reference_lines(replaced_prompt),
+            has_character_reference=has_character_reference,
+            context_text="",
+            prop_reference_names=prop_reference_names,
+        )
+    ]
+    lines.extend(_reference_relation_lines(mappings))
+    return "\n".join(line for line in lines if line).strip()
 
 
 class FrameDerivedPreview(GenerationDerivedPreview):
@@ -345,7 +541,19 @@ def derive_frame_preview(
         screen_direction_guidance=base.screen_direction_guidance,
     )
     rendered_prompt = compose_shot_frame_rendered_prompt(
-        replaced_prompt=enriched_prompt,
+        replaced_prompt=_cleanup_rendered_prompt_surface(
+            enriched_prompt,
+            has_character_reference=any(str(mapping.type) == "character" for mapping in context.ordered_refs),
+            context_text="；".join(
+                part
+                for part in [
+                    base.frame_specific_guidance,
+                    base.director_command_summary,
+                ]
+                if part
+            ),
+            prop_reference_names=[(mapping.name or "").strip() for mapping in context.ordered_refs if str(mapping.type) == "prop"],
+        ),
         mappings=context.ordered_refs,
     )
     return FrameDerivedPreview(

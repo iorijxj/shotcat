@@ -4,13 +4,18 @@ import { api, fileUrl, type Chapter, type Entity, type FrameType, type Project, 
 import Lightbox from '../Lightbox'
 
 const FRAMES: { key: FrameType; label: string }[] = [
-  { key: 'first', label: '首帧' },
   { key: 'key', label: '关键帧' },
-  { key: 'last', label: '尾帧' },
 ]
 
 type FrameState = { fileId: string | null; busy: boolean; stage: string; error: string }
 const emptyFrame = (): FrameState => ({ fileId: null, busy: false, stage: '', error: '' })
+
+const stripReferenceLines = (text: string) =>
+  String(text || '')
+    .split('\n')
+    .filter((line) => !/^(角色参考|场景参考|道具参考|参考)：/.test(line.trim()))
+    .join('\n')
+    .trim()
 
 export default function Frames({ project }: { project: Project | null }) {
   const [params] = useSearchParams()
@@ -23,9 +28,12 @@ export default function Frames({ project }: { project: Project | null }) {
   const [cast, setCast] = useState<Entity[]>([])
   const [scenes, setScenes] = useState<Entity[]>([])
   const [lb, setLb] = useState<string | null>(null)
-  const [detail, setDetail] = useState<any>(null) // 镜头详情(含真实首/关/尾帧提示词)
+  const [detail, setDetail] = useState<any>(null) // 镜头详情(含真实关键帧提示词)
+  const [renderedPrompts, setRenderedPrompts] = useState<Partial<Record<FrameType, string>>>({})
+  const [promptDrafts, setPromptDrafts] = useState<Partial<Record<FrameType, string>>>({})
   const [openCh, setOpenCh] = useState<Record<string, boolean>>({}) // 镜头列表按集折叠
   const [thumbs, setThumbs] = useState<Record<string, Partial<Record<FrameType, string>>>>({}) // 镜头缩略图索引
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
 
   // 当前选中镜头 id 的实时引用：异步链回写前用它校验镜头未被切走
   const selRef = useRef<string | null>(null)
@@ -86,9 +94,35 @@ export default function Frames({ project }: { project: Project | null }) {
   useEffect(() => {
     if (!sel) return
     const shotId = sel.id
+    setRenderedPrompts({})
+    setPromptDrafts({})
     loadFrames(shotId)
     api.shotDetail(shotId).then((d) => { if (selRef.current === shotId) setDetail(d) })
   }, [sel, loadFrames])
+
+  useEffect(() => {
+    if (!sel || !detail) return
+    const shotId = sel.id
+    let cancelled = false
+    const bases: [FrameType, string][] = [
+      ['key', detail.key_frame_prompt],
+    ].filter(([, v]) => v && String(v).trim()) as [FrameType, string][]
+    if (!bases.length) return
+    ;(async () => {
+      const refs = await api.frameRefs(shotId, project?.id).catch(() => [])
+      const next: Partial<Record<FrameType, string>> = {}
+      for (const [ft, base] of bases) {
+        const finalBase = stripReferenceLines(String(base).trim()) + api.refGuard(refs)
+        const rendered = await api.renderFramePrompt(shotId, ft, finalBase, refs).catch(() => null)
+        next[ft] = (rendered?.rendered_prompt || finalBase).trim()
+      }
+      if (!cancelled && selRef.current === shotId) {
+        setRenderedPrompts(next)
+        setPromptDrafts((drafts) => ({ ...next, ...drafts }))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [detail, project?.id, sel])
 
   const setFrame = (ft: FrameType, patch: Partial<FrameState>) =>
     setFrames((prev) => ({ ...prev, [ft]: { ...prev[ft], ...patch } }))
@@ -98,21 +132,24 @@ export default function Frames({ project }: { project: Project | null }) {
     if (frames[ft].busy) return // 该帧正在生成，防重入
     const shotId = sel.id
     const shot = sel
+    const manualPrompt = stripReferenceLines(promptDrafts[ft] || '')
     const alive = () => selRef.current === shotId // 镜头未被切走才回写 UI
     const cancelled = () => cancelledRef.current
     setFrame(ft, { busy: true, error: '', stage: '生成提示词…' })
     try {
       // 1) 基础提示词（失败/空则退回剧本摘录构造）
-      let prompt = ''
-      try {
-        const ptask = await api.createFramePromptTask(shotId, ft)
-        const ps = await api.pollTask(ptask, undefined, 60, cancelled)
-        if (ps.status === 'succeeded') {
-          const r = await api.taskResult(ptask)
-          prompt = (r.result?.prompt || '').trim()
+      let prompt = manualPrompt
+      if (!prompt) {
+        try {
+          const ptask = await api.createFramePromptTask(shotId, ft)
+          const ps = await api.pollTask(ptask, undefined, 60, cancelled)
+          if (ps.status === 'succeeded') {
+            const r = await api.taskResult(ptask)
+            prompt = (r.result?.prompt || '').trim()
+          }
+        } catch {
+          /* 降级到摘录 */
         }
-      } catch {
-        /* 降级到摘录 */
       }
       if (!prompt) {
         prompt = [shot.camera_shot, shot.title, shot.script_excerpt].filter(Boolean).join('，').slice(0, 300)
@@ -122,9 +159,14 @@ export default function Frames({ project }: { project: Project | null }) {
       // 2) 生成图（target_ratio 必填；503=无图像模型 会在此同步抛出）
       // 带上镜头关联的造型图作参考图（角色→场景→道具）——跨镜一致性的关键
       const refs = await api.frameRefs(shotId, project?.id)
+      const finalBasePrompt = stripReferenceLines(prompt) + api.refGuard(refs)
+      const rendered = manualPrompt ? null : await api.renderFramePrompt(shotId, ft, finalBasePrompt, refs).catch(() => null)
+      const finalPrompt = (rendered?.rendered_prompt || finalBasePrompt).trim()
+      if (alive()) setRenderedPrompts((m) => ({ ...m, [ft]: finalPrompt }))
+      if (alive()) setPromptDrafts((m) => ({ ...m, [ft]: finalPrompt }))
       if (alive()) setFrame(ft, { stage: refs.length ? `生成画面…（${refs.length} 张参考图）` : '生成画面…' })
       const ratio = project?.default_video_ratio || '9:16'
-      const itask = await api.createFrameImageTask(shotId, ft, prompt + api.refGuard(refs), ratio, refs)
+      const itask = await api.createFrameImageTask(shotId, ft, finalPrompt, ratio, refs)
       const is = await api.pollTask(itask, (p) => { if (alive()) setFrame(ft, { stage: `生成画面… ${p}%` }) }, 120, cancelled)
       if (is.status !== 'succeeded') {
         const r = await api.taskResult(itask).catch(() => null)
@@ -147,21 +189,57 @@ export default function Frames({ project }: { project: Project | null }) {
     }
   }
 
-  async function generateAll() {
-    for (const f of FRAMES) await generate(f.key)
+  async function generateBatchFrames() {
+    if (!project || batch || !shots.length) return
+    const ft: FrameType = 'key'
+    const ratio = project.default_video_ratio || '9:16'
+    const idx = await api.frameIndex().catch(() => thumbs)
+    const queue = shots.filter((shot) => {
+      const f = idx[shot.id]
+      return !f?.key
+    })
+    if (!queue.length) {
+      alert('当前列表没有缺失画面的镜头')
+      return
+    }
+    setBatch({ done: 0, total: queue.length })
+    try {
+      const items = await Promise.all(queue.map(async (shot) => {
+        const refs = await api.frameRefs(shot.id, project.id).catch(() => [])
+        return { shot_id: shot.id, name: shot.title || `镜头 ${shot.index}`, frame_type: ft, images: refs }
+      }))
+      const created = await api.createFrameImageBatch(items, ratio)
+      await api.pollFrameImageBatch(created.batch_id, (s) => {
+        setBatch({ done: s.succeeded + s.failed, total: s.total })
+      })
+    } finally {
+      setBatch(null)
+      api.frameIndex().then(setThumbs).catch(() => {})
+      if (selRef.current) loadFrames(selRef.current)
+    }
   }
 
   if (!project) return <div className="center">未找到项目 · 请先用 bridge 导入剧本</div>
-  const anyBusy = Object.values(frames).some((f) => f.busy)
+  const anyBusy = Object.values(frames).some((f) => f.busy) || !!batch
 
-  const readyCount = (['first', 'key', 'last'] as FrameType[]).filter((t) => frames[t].fileId).length
+  const readyCount = frames.key.fileId ? 1 : 0
+  const shotBasis = [
+    detail?.description,
+    ...(detail?.action_beats || []),
+    sel?.script_excerpt,
+  ].map((x) => String(x || '').trim()).filter(Boolean)
+  const shotBasisText = shotBasis[0] || '当前镜头缺少画面描述，请先重新拆分镜或在分镜页补充。'
+  const shotMetaText = [sel?.camera_shot, sel?.title].filter(Boolean).join(' · ') || '未选择镜头'
+  const sceneName = scenes.find((x) => x.id === detail?.scene_id)?.name
 
   return (
       <div className="work frames-page">
         <div className="work-head">
           <h1>画面工作台</h1>
           <div className="spacer" />
-          <button className="btn ghost" disabled={anyBusy || !sel} onClick={generateAll}>批量生成</button>
+          <button className="btn ghost" disabled={anyBusy || !shots.length} onClick={generateBatchFrames}>
+            {batch ? `批量投任务 ${batch.done}/${batch.total}` : '批量生成缺失画面'}
+          </button>
           <button className="btn primary" disabled={anyBusy || !sel} onClick={() => generate('key')}>生成本镜关键帧</button>
         </div>
 
@@ -180,7 +258,7 @@ export default function Frames({ project }: { project: Project | null }) {
                   </div>
                   {openCh[c.id] && list.map((s) => {
                     const t = thumbs[s.id]
-                    const tf = t?.key || t?.first || t?.last
+                    const tf = t?.key
                     return (
                       <div key={s.id} className={'fshot' + (sel?.id === s.id ? ' sel' : '')} onClick={() => setSel(s)}>
                         {tf ? (
@@ -215,107 +293,133 @@ export default function Frames({ project }: { project: Project | null }) {
               <span className="mi"><b>时长</b>{sel?.duration ? `${sel.duration}s` : '—'}</span>
               <span className="mi"><b>状态</b>{sel?.status === 'ready' ? '就绪' : '待确认'}</span>
               <span className="spacer" />
-              <span className="ready-badge">画面就绪 {readyCount} / 3 帧</span>
+              <span className="ready-badge">关键帧 {readyCount} / 1</span>
             </div>
 
-            <div className="frames">
-              {FRAMES.map((f) => {
-                const st = frames[f.key]
-                return (
-                  <div key={f.key} className={'frame' + (st.fileId ? ' filled' : '')}>
-                    <div className="img">
-                      {st.busy ? (
-                        <div className="ph"><div className="plus">◔</div>{st.stage}</div>
-                      ) : st.fileId ? (
-                        <img className="zoomable" src={fileUrl(st.fileId)} alt={f.label} title="点击放大"
-                          onClick={() => setLb(fileUrl(st.fileId!))}
-                          style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                      ) : st.error ? (
-                        <div className="ph" style={{ color: 'var(--danger)' }} title={st.error}>⚠ {st.error.slice(0, 24)}</div>
-                      ) : (
-                        <div className="ph"><div className="plus">＋</div>生成{f.label}</div>
-                      )}
-                    </div>
-                    <div className="cap">
-                      <span className="k">{f.label}</span>
-                      {st.fileId ? (
-                        <span className="tag" style={{ cursor: st.busy ? 'default' : 'pointer', opacity: st.busy ? 0.5 : 1 }}
-                          onClick={st.busy ? undefined : () => generate(f.key)}>
-                          {st.busy ? '生成中' : '重生成'}
-                        </span>
-                      ) : (
-                        <button className="btn ghost" style={{ padding: '2px 9px', fontSize: 11 }} disabled={st.busy || !sel} onClick={() => generate(f.key)}>
-                          {st.busy ? '生成中' : '生成'}
-                        </button>
-                      )}
+            <div className="frame-workspace">
+              <div className="frame-main">
+                <div className="frames">
+                  {FRAMES.map((f) => {
+                    const st = frames[f.key]
+                    return (
+                      <div key={f.key} className={'frame' + (st.fileId ? ' filled' : '')}>
+                        <div className="img">
+                          {st.busy ? (
+                            <div className="ph"><div className="plus">◔</div>{st.stage}</div>
+                          ) : st.fileId ? (
+                            <img className="zoomable" src={fileUrl(st.fileId)} alt={f.label} title="点击放大"
+                              onClick={() => setLb(fileUrl(st.fileId!))}
+                              style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                          ) : st.error ? (
+                            <div className="ph" style={{ color: 'var(--danger)' }} title={st.error}>⚠ {st.error.slice(0, 24)}</div>
+                          ) : (
+                            <div className="ph"><div className="plus">＋</div>生成{f.label}</div>
+                          )}
+                        </div>
+                        <div className="cap">
+                          <span className="k">{f.label}</span>
+                          {st.fileId ? (
+                            <span className="tag" style={{ cursor: st.busy ? 'default' : 'pointer', opacity: st.busy ? 0.5 : 1 }}
+                              onClick={st.busy ? undefined : () => generate(f.key)}>
+                              {st.busy ? '生成中' : '重生成'}
+                            </span>
+                          ) : (
+                            <button className="btn ghost" style={{ padding: '2px 9px', fontSize: 11 }} disabled={st.busy || !sel} onClick={() => generate(f.key)}>
+                              {st.busy ? '生成中' : '生成'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* 生成依据：角色/场景 参考，横向并入中间 */}
+                <div className="refs-row">
+                  <div className="refs-group">
+                    <div className="rg-h">角色设计 · 生成依据</div>
+                    <div className="rg-list">
+                      {cast.length === 0 && <div className="muted" style={{ fontSize: 12 }}>暂无角色 · 先在造型页设置</div>}
+                      {cast.map((c) => (
+                        <div className="ref-ent" key={c.id}>
+                          {c.thumbnail ? (
+                            <img src={c.thumbnail} alt={c.name} title="点击放大" onClick={() => setLb(c.thumbnail!)} />
+                          ) : (
+                            <div className="ref-empty">未生成</div>
+                          )}
+                          <div className="rn">{c.name}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                )
-              })}
-            </div>
+                  <div className="refs-group">
+                    <div className="rg-h">场景设计 · 生成依据</div>
+                    <div className="rg-list">
+                      {scenes.length === 0 && <div className="muted" style={{ fontSize: 12 }}>暂无场景 · 先在造型页设置</div>}
+                      {scenes.map((s) => (
+                        <div className="ref-ent" key={s.id}>
+                          {s.thumbnail ? (
+                            <img src={s.thumbnail} alt={s.name} title="点击放大" onClick={() => setLb(s.thumbnail!)} />
+                          ) : (
+                            <div className="ref-empty">未生成</div>
+                          )}
+                          <div className="rn">{s.name}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-            <div className="prompt">
-              <div className="ph"><span className="k">画面提示词（真实生成用，含锁定造型/场景/景别机位/连续性）</span></div>
-              {(() => {
-                const map: [FrameType, string][] = [
-                  ['first', detail?.first_frame_prompt], ['key', detail?.key_frame_prompt], ['last', detail?.last_frame_prompt],
-                ].filter(([, v]) => v && String(v).trim()) as [FrameType, string][]
-                const labels: Record<FrameType, string> = { first: '首帧', key: '关键帧', last: '尾帧' }
-                if (map.length === 0)
-                  return (
-                    <div className="box muted">
-                      尚未生成 · 点某帧「生成」后，会用 frame-prompt 结合本镜头**关联角色的锁定造型 + 场景 + 景别机位 + 前后连续性**自动产出完整提示词并显示于此。
-                      <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 12 }}>
-                        预览依据：{sel?.camera_shot || 'MS'} · {sel?.title} — {(sel?.script_excerpt || '').slice(0, 40)}
+              <aside className="prompt prompt-side">
+                <div className="ph"><span className="k">画面提示词</span></div>
+                {(() => {
+                  const map: [FrameType, string][] = [
+                    ['key', renderedPrompts.key || detail?.key_frame_prompt],
+                  ].filter(([, v]) => v && String(v).trim()) as [FrameType, string][]
+                  const labels: Partial<Record<FrameType, string>> = { key: '关键帧' }
+                  if (map.length === 0)
+                    return (
+                      <div className="box muted">
+                        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text-3)', fontSize: 12, lineHeight: 1.6 }}>
+                          <div><span className="em">【镜头】</span>{shotMetaText}{sceneName ? ` · ${sceneName}` : ''}</div>
+                          <div><span className="em">【画面依据】</span>{shotBasisText}</div>
+                        </div>
                       </div>
+                    )
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {map.map(([ft, v]) => (
+                        <div className="box" key={ft}>
+                          <div className="prompt-row-head">
+                            <span className="em">【{labels[ft]}】</span>
+                            <button
+                              className="btn ghost"
+                              style={{ padding: '2px 9px', fontSize: 11 }}
+                              disabled={!sel || frames[ft].busy}
+                              onClick={() => generate(ft)}
+                            >
+                              {frames[ft].fileId ? '用此提示词重生成' : '用此提示词生成'}
+                            </button>
+                          </div>
+                          <textarea
+                            className="prompt-edit"
+                            value={promptDrafts[ft] ?? v}
+                            onChange={(e) => setPromptDrafts((m) => ({ ...m, [ft]: e.target.value }))}
+                            onBlur={(e) => {
+                              if (!sel) return
+                              const value = e.target.value
+                              api.updateShotDetail(sel.id, { key_frame_prompt: value })
+                                .then(() => setDetail((d: any) => ({ ...d, key_frame_prompt: value })))
+                                .catch((err) => alert(err?.message || '保存提示词失败'))
+                            }}
+                          />
+                        </div>
+                      ))}
                     </div>
                   )
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {map.map(([ft, v]) => (
-                      <div className="box" key={ft}>
-                        <span className="em">【{labels[ft]}】</span>{v}
-                      </div>
-                    ))}
-                  </div>
-                )
-              })()}
-            </div>
-
-            {/* 生成依据：角色/场景 参考，横向并入中间 */}
-            <div className="refs-row">
-              <div className="refs-group">
-                <div className="rg-h">角色设计 · 生成依据</div>
-                <div className="rg-list">
-                  {cast.length === 0 && <div className="muted" style={{ fontSize: 12 }}>暂无角色 · 先在造型页设置</div>}
-                  {cast.map((c) => (
-                    <div className="ref-ent" key={c.id}>
-                      {c.thumbnail ? (
-                        <img src={c.thumbnail} alt={c.name} title="点击放大" onClick={() => setLb(c.thumbnail!)} />
-                      ) : (
-                        <div className="ref-empty">未生成</div>
-                      )}
-                      <div className="rn">{c.name}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="refs-group">
-                <div className="rg-h">场景设计 · 生成依据</div>
-                <div className="rg-list">
-                  {scenes.length === 0 && <div className="muted" style={{ fontSize: 12 }}>暂无场景 · 先在造型页设置</div>}
-                  {scenes.map((s) => (
-                    <div className="ref-ent" key={s.id}>
-                      {s.thumbnail ? (
-                        <img src={s.thumbnail} alt={s.name} title="点击放大" onClick={() => setLb(s.thumbnail!)} />
-                      ) : (
-                        <div className="ref-empty">未生成</div>
-                      )}
-                      <div className="rn">{s.name}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+                })()}
+              </aside>
             </div>
           </div>
         </div>

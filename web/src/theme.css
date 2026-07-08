@@ -171,7 +171,9 @@ img.th{object-fit:cover}
 .stage-title{margin-bottom:14px}
 .stage-title .h{font-family:var(--serif);font-size:16px;font-weight:700;color:var(--gold-2)}
 .stage-title .h span{color:var(--text-3);font-weight:400;margin-left:8px;font-size:12.5px;font-family:var(--font)}
-.frames{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;max-width:80%}
+.frame-workspace{display:grid;grid-template-columns:minmax(0,1fr) 390px;gap:18px;align-items:start}
+.frame-main{min-width:0}
+.frames{display:grid;grid-template-columns:minmax(280px,620px);gap:12px;margin-bottom:18px}
 .frame{background:var(--surface-2);border-radius:var(--r);overflow:hidden}
 .frame .img{aspect-ratio:16/9;display:grid;place-items:center;color:var(--text-3);background:linear-gradient(135deg,#201c15,#14110d);position:relative}
 .frame.filled .img{background:radial-gradient(80% 120% at 70% 15%,rgba(212,175,55,.26),transparent 60%),linear-gradient(160deg,#2b2417,#14120e 70%)}
@@ -181,10 +183,13 @@ img.th{object-fit:cover}
 .frame .ph{display:flex;flex-direction:column;align-items:center;gap:7px;font-size:12px}
 .frame .ph .plus{width:34px;height:34px;border-radius:50%;border:1px dashed var(--border);display:grid;place-items:center;color:var(--text-3);font-size:18px}
 .prompt{background:var(--surface-2);border-radius:var(--r);padding:14px 16px}
+.prompt-side{position:sticky;top:0;max-height:calc(100vh - 150px);overflow:auto}
+.prompt-side .prompt-edit{min-height:430px}
 .prompt .ph{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .prompt .ph .k{font-size:12.5px;font-weight:600;color:var(--text-2)}
 .prompt .box{background:var(--bg);border:1px solid var(--border-soft);border-radius:8px;padding:11px 13px;line-height:1.65;font-size:13px;min-height:74px}
 .prompt .box .em{color:var(--gold-2)}
+.prompt-row-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
 .props{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .prop{background:var(--surface-2);border-radius:8px;padding:9px 11px}
 .prop .k{font-size:11px;color:var(--text-3)}
@@ -229,14 +234,20 @@ img.th{object-fit:cover}
 .modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
 
 /* ── 画面台：属性信息条 + 生成依据横向 ── */
-.meta-bar{display:flex;align-items:center;gap:18px;margin-bottom:14px;padding:9px 14px;background:var(--surface-2);border-radius:8px;font-size:12.5px;max-width:80%}
+.meta-bar{display:flex;align-items:center;gap:18px;margin-bottom:14px;padding:9px 14px;background:var(--surface-2);border-radius:8px;font-size:12.5px}
 .meta-bar .mi{color:var(--text)}
 .meta-bar .mi b{color:var(--text-3);font-weight:400;margin-right:6px;font-size:11px}
 .meta-bar .ready-badge{background:var(--gold-soft);color:var(--gold-2);padding:3px 11px;border-radius:6px;font-size:12px}
-.refs-row{display:flex;gap:16px;margin-top:16px;max-width:80%}
+.refs-row{display:flex;gap:16px;margin-top:16px}
 .refs-group{flex:1;min-width:0}
 .rg-h{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.09em;margin-bottom:9px}
 .rg-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+
+@media (max-width:1180px){
+  .frame-workspace{grid-template-columns:1fr}
+  .prompt-side{position:static;max-height:none}
+  .prompt-side .prompt-edit{min-height:220px}
+}
 
 /* 顶栏画幅选择器 */
 .ratio-sel{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-3)}
@@ -361,6 +372,8 @@ img.zoomable{cursor:zoom-in}
 .cast-card .cc-body{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .cast-card .cc-h{display:flex;align-items:baseline;gap:8px}
 .cast-card .cc-h .n{font-family:var(--serif);font-size:15px;font-weight:700;color:var(--text)}
+.cast-card .cc-name-input{min-width:0;max-width:58%;background:transparent;border:0;border-bottom:1px solid transparent;padding:0;color:var(--text)}
+.cast-card .cc-name-input:focus{outline:none;border-bottom-color:var(--gold)}
 .cast-card .cc-h .role{font-size:11px;color:var(--accent-2)}
 .cast-card .cc-h .id{margin-left:auto;font-size:10px;color:var(--text-3);font-family:ui-monospace,monospace}
 .cast-card .cc-desc{font-size:12px;color:var(--text-2);line-height:1.55;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;min-height:56px}

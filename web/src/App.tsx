@@ -56,13 +56,25 @@ export default function App() {
 
   // 启动：载入项目列表，恢复上次选中的项目
   useEffect(() => {
-    api.projects().then((ps) => {
-      const urlPid = new URLSearchParams(window.location.search).get('pid')
-      const wantId = urlPid || localStorage.getItem('duanju.pid')
-      const found = ps.find((p) => p.id === wantId) ?? null
-      setProject(found)
-      if (found) localStorage.setItem('duanju.pid', found.id)
-    }).catch(() => {})
+    let stopped = false
+    let timer: number | null = null
+    const load = () => {
+      api.projects().then((ps) => {
+        if (stopped) return
+        const urlPid = new URLSearchParams(window.location.search).get('pid')
+        const wantId = urlPid || localStorage.getItem('duanju.pid')
+        const found = ps.find((p) => p.id === wantId) ?? null
+        setProject(found)
+        if (found) localStorage.setItem('duanju.pid', found.id)
+      }).catch(() => {
+        if (!stopped) timer = window.setTimeout(load, 2000)
+      })
+    }
+    load()
+    return () => {
+      stopped = true
+      if (timer != null) window.clearTimeout(timer)
+    }
   }, [])
 
   const openProject = (p: Project) => {

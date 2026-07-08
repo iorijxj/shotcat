@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, ANGLE_ZH, CAMERA_ZH, MOVE_ZH, type Chapter, type Entity, type Project, type Shot } from '../lib/api'
+import { api, ANGLE_ZH, CAMERA_ZH, MOVE_ZH, type Chapter, type Entity, type FrameType, type Project, type Shot } from '../lib/api'
 
 // 对白判别：新数据 bridge 会给对白包「」；旧数据是 [动作, 对白] 双拍点，第二条即对白
 const isDialogue = (b: string, idx: number, total: number) => /[「『“"]/.test(b) || (total === 2 && idx === 1)
@@ -30,7 +30,7 @@ export default function Storyboard({ project }: { project: Project | null }) {
   const [chars, setChars] = useState<Entity[]>([])
   const [sel, setSel] = useState<string>('')
   const [loading, setLoading] = useState(false)
-  const [pipe, setPipe] = useState('') // shot-breakdown / unit-gen 进行中
+  const [pipe, setPipe] = useState('') // shot-breakdown 进行中
   const [batch, setBatch] = useState<{ cid: string; p: string } | null>(null) // 单集批量生成进度
   const [err, setErr] = useState('')
   const navigate = useNavigate()
@@ -90,41 +90,31 @@ export default function Storyboard({ project }: { project: Project | null }) {
       await loadAll()
     } catch (e: any) { alert(e?.message || '拆镜头失败') } finally { setPipe('') }
   }
-  // 生成视听单元(供图生视频)
-  async function genUnits() {
-    if (!project || pipe) return
-    setPipe('unit')
-    try {
-      const j = await api.runPipeline('unit-gen', project.id)
-      await api.pollPipeline(j, 200, () => cancelledRef.current)
-      alert('视听单元已生成（bridge/units-*.json，供图生视频/图像 prompt）')
-    } catch (e: any) { alert(e?.message || '视听单元生成失败') } finally { setPipe('') }
-  }
-  // 批量生成某一集所有镜头的关键帧
+  // 批量生成某一集缺失画面的镜头：每个镜头只补一张代表关键帧
   async function genAllFrames(cid: string) {
     const list = shotsByCh[cid] || []
     if (!list.length || batch) return
     const ratio = project?.default_video_ratio || '9:16'
-    const cancelled = () => cancelledRef.current
-    for (let i = 0; i < list.length; i++) {
-      if (cancelled()) break // 页面已卸载，不再投新任务
-      setBatch({ cid, p: `${i + 1}/${list.length}` })
-      const s = list[i]
-      try {
-        let prompt = ''
-        try {
-          const pt = await api.createFramePromptTask(s.id, 'key')
-          const ps = await api.pollTask(pt, undefined, 60, cancelled)
-          if (ps.status === 'succeeded') prompt = ((await api.taskResult(pt)).result?.prompt || '').trim()
-        } catch {}
-        if (!prompt) prompt = [s.camera_shot, s.title, s.script_excerpt].filter(Boolean).join('，').slice(0, 300)
-        const refs = await api.frameRefs(s.id, project?.id) // 角色/场景/道具造型图作参考
-        const it = await api.createFrameImageTask(s.id, 'key', prompt + api.refGuard(refs), ratio, refs)
-        await api.pollTask(it, undefined, 120, cancelled)
-      } catch {}
+    const idx = await api.frameIndex().catch(() => ({} as Record<string, Partial<Record<FrameType, string>>>))
+    const queue = list.filter((s) => {
+      const f = idx[s.id]
+      return !f?.key
+    })
+    if (!queue.length) return
+    setBatch({ cid, p: `0/${queue.length}` })
+    try {
+      const items = await Promise.all(queue.map(async (s) => {
+        const refs = await api.frameRefs(s.id, project?.id).catch(() => [])
+        return { shot_id: s.id, name: s.title || `镜头 ${s.index}`, frame_type: 'key' as FrameType, images: refs }
+      }))
+      const created = await api.createFrameImageBatch(items, ratio)
+      await api.pollFrameImageBatch(created.batch_id, (s) => {
+        setBatch({ cid, p: `${s.succeeded + s.failed}/${s.total}` })
+      }, () => cancelledRef.current)
+    } finally {
+      setBatch(null)
+      if (!cancelledRef.current) await loadAll()
     }
-    setBatch(null)
-    if (!cancelled()) await loadAll()
   }
 
   useEffect(() => {
@@ -157,16 +147,14 @@ export default function Storyboard({ project }: { project: Project | null }) {
         <button className="btn ghost" disabled={!!pipe || !!batch} onClick={aiBreakdown}>
           {pipe === 'shot' ? '拆镜头中…' : 'AI 拆镜头'}
         </button>
-        <button className="btn ghost" disabled={!!pipe || !!batch} onClick={genUnits}>
-          {pipe === 'unit' ? '生成中…' : '生成视听单元'}
-        </button>
       </div>
 
-      {/* 场景/造型 上下文 */}
-      <div className="sb-ctx">
-        <span className="ctx-k">场景</span><span className="ctx-v">{scenes.map((s) => s.name).join(' · ') || '未设置'}</span>
-        <span className="ctx-k">造型</span><span className="ctx-v">{chars.map((c) => c.name).join(' · ') || '—'}</span>
-      </div>
+      {totalShots > 0 && (
+        <div className="sb-ctx">
+          <span className="ctx-k">镜头场景</span><span className="ctx-v">{scenes.map((s) => s.name).join(' · ') || '未设置'}</span>
+          <span className="ctx-k">镜头角色</span><span className="ctx-v">{chars.map((c) => c.name).join(' · ') || '—'}</span>
+        </div>
+      )}
 
       {err && <div className="fld-err" style={{ marginBottom: 12 }}>{err}</div>}
 
@@ -186,7 +174,7 @@ export default function Storyboard({ project }: { project: Project | null }) {
                 <span className="ep-cnt">{list.length} 个镜头{secs > 0 && ` · 总时长约 ${secs >= 60 ? `${Math.floor(secs / 60)} 分 ${secs % 60} 秒` : `${secs} 秒`}`}</span>
                 <button className="btn ghost" disabled={!!batch || !!pipe || !list.length}
                   onClick={(e) => { e.stopPropagation(); genAllFrames(c.id) }}>
-                  {batch?.cid === c.id ? `生成画面 ${batch.p}` : '生成本集画面'}
+                  {batch?.cid === c.id ? `生成画面 ${batch.p}` : '批量生成本集画面'}
                 </button>
               </div>
               {open[c.id] && (list.length === 0 ? (

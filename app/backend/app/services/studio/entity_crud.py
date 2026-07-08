@@ -12,6 +12,7 @@ from app.api.utils import apply_keyword_filter, apply_order, paginate
 from app.models.studio import Actor, Chapter, Costume, Project, Shot, ShotCharacterLink
 from app.schemas.studio.cast import ShotCharacterLinkCreate
 from app.services.common import entity_already_exists, entity_not_found
+from app.services.studio.entity_image_names import sync_entity_image_file_names
 from app.services.studio.entity_specs import DEFAULT_VIEW_ANGLES, LINK_MODEL_BY_ENTITY, entity_spec, normalize_entity_type
 from app.services.studio.entity_thumbnails import resolve_thumbnails
 from app.services.studio.shot_character_links import upsert as upsert_shot_character_link
@@ -242,6 +243,9 @@ async def update_entity(
         setattr(obj, key, value)
     await db.flush()
     await db.refresh(obj)
+    if "name" in update_data:
+        await sync_entity_image_file_names(db, entity_type=entity_type_norm, entity_id=entity_id)
+        await db.flush()
 
     if entity_type_norm in {"actor", "character"}:
         read_model = spec.read_model

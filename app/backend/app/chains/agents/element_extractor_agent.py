@@ -37,10 +37,11 @@ _SCRIPT_EXTRACTOR_SYSTEM_PROMPT = """\
 - 严格区分：shots[*].title 是“镜头标题”（一句话描述该镜头画面/动作），不要拿它当作 scenes 的 scene 名；shots[*].scene_name 才是场景名称，必须来自 scenes 全局列表的 name。
 - 除实体与对白外，还必须尽量补充镜头语言默认建议：`camera_shot` / `angle` / `movement` / `duration`。
 - `camera_shot` 只能输出：ECU / CU / MCU / MS / MLS / LS / ELS。
-- `angle` 只能输出：EYE_LEVEL / HIGH_ANGLE / LOW_ANGLE / BIRD_EYE / DUTCH / OVER_SHOULDER。
+- `angle` 只能输出：EYE_LEVEL / HIGH_ANGLE / LOW_ANGLE / BIRD_EYE / DUTCH。即使原文出现“过肩”，也优先转为 EYE_LEVEL 或轻侧面关系，并在动作/描述里写清左右站位。
 - `movement` 只能输出：STATIC / PAN / TILT / DOLLY_IN / DOLLY_OUT / TRACK / CRANE / HANDHELD / STEADICAM / ZOOM_IN / ZOOM_OUT。
 - `duration` 必须输出正整数秒数；若无法判断，可省略。
 - `action_beats` 需要输出 2-4 条按镜头内部时间顺序排列的动作拍点；每一条只描述一个主要动作或状态变化，不要写成长段文学描述。
+- 不要因为场景常识给镜头或道具库新增随身物件，例如书包、背包、手机、雨伞、购物袋、杯子等；只有原文明确出现、当前镜头动作正在使用、或作为关键道具时才输出。
 - `semantic_suggestion` 是“镜头默认语义建议”，不是最终生成提示词，不要输出提示词式修饰文本。
 
 输入：

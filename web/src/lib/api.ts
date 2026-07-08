@@ -36,7 +36,7 @@ export const CAMERA_ZH: Record<string, string> = {
   ECU: '大特写', CU: '特写', MCU: '中近景', MS: '中景', MLS: '中远景', LS: '远景', ELS: '大远景',
 }
 export const ANGLE_ZH: Record<string, string> = {
-  EYE_LEVEL: '平视', HIGH_ANGLE: '俯拍', LOW_ANGLE: '仰拍', BIRD_EYE: '鸟瞰', DUTCH: '荷兰角', OVER_SHOULDER: '过肩',
+  EYE_LEVEL: '平视', HIGH_ANGLE: '俯拍', LOW_ANGLE: '仰拍', BIRD_EYE: '鸟瞰', DUTCH: '荷兰角',
 }
 export const MOVE_ZH: Record<string, string> = {
   STATIC: '固定', PAN: '横摇', TILT: '纵摇', DOLLY_IN: '推', DOLLY_OUT: '拉', TRACK: '跟移',
@@ -45,6 +45,19 @@ export const MOVE_ZH: Record<string, string> = {
 export interface Entity { id: string; name: string; description?: string; thumbnail?: string; costume_id?: string }
 export interface FrameImage { id: number; shot_detail_id: string; frame_type: 'first' | 'key' | 'last'; file_id: string | null }
 export interface TaskStatus { task_id: string; status: string; progress: number }
+export interface AssetImageBatchStatus {
+  batch_id: string
+  status: string
+  total: number
+  queued: number
+  running: number
+  succeeded: number
+  failed: number
+  current?: string
+  current_task_id?: string | null
+  error?: string
+  items: any[]
+}
 export type FrameType = 'first' | 'key' | 'last'
 
 interface Paged<T> { items: T[]; pagination: { total: number; max_page?: number } }
@@ -52,6 +65,12 @@ interface Paged<T> { items: T[]; pagination: { total: number; max_page?: number 
 export const fileUrl = (fileId: string) => `${BASE}/studio/files/${fileId}/download`
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms))
+
+const cleanRefName = (name: string | undefined, fallback: string) =>
+  String(name || fallback)
+    .replace(/[-－_ ]?默认服装[（(][^）)]+[）)]/g, '')
+    .replace(/[-－_ ]?默认服装/g, '')
+    .trim() || fallback
 
 export const api = {
   projects: () => get<Paged<Project>>('/studio/projects?page_size=100').then((d) => d.items),
@@ -88,7 +107,7 @@ export const api = {
     }
     return m
   },
-  // 单个镜头详情：含真实的首/关/尾帧提示词(frame-prompt 任务生成后落库)
+  // 单个镜头详情：含真实的关键帧提示词(frame-prompt 任务生成后落库)
   shotDetail: (shotId: string) => get<any>(`/studio/shot-details/${shotId}`).catch(() => null),
   // 整章镜头的角色关联（批量）：shot_id → character_id[]
   shotCharacters: (chapterId: string) =>
@@ -111,6 +130,10 @@ export const api = {
     }).then((r) => { if (!r.ok) throw new Error(`保存失败 ${r.status}`) }),
   entities: (type: string, projectId: string) =>
     get<Paged<Entity>>(`/studio/entities/${type}?project_id=${projectId}&page_size=100`).then((d) => d.items),
+  updateEntity: (type: string, id: string, patch: Partial<Entity>) =>
+    fetch(`${BASE}/studio/entities/${type}/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    }).then((r) => { if (!r.ok) throw new Error(`更新失败 ${r.status}`) }),
 
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>
@@ -130,9 +153,18 @@ export const api = {
   },
   createFramePromptTask: (shotId: string, frameType: FrameType) =>
     post<{ task_id: string }>('/film/tasks/shot-frame-prompts', { shot_id: shotId, frame_type: frameType }).then((d) => d.task_id),
-  // 镜头关联资产（角色/场景/道具/服装）及各自最佳造型图 file_id——作帧生成参考图
+  renderFramePrompt: (shotId: string, frameType: FrameType, prompt: string, refs?: any[]) =>
+    post<{ rendered_prompt: string; base_prompt: string; images: string[]; mappings: any[] }>(
+      `/studio/image-tasks/shot/${shotId}/frame-render-prompt`,
+      {
+        frame_type: frameType,
+        prompt,
+        ...(refs?.length ? { images: refs.map((r) => ({ ...r, name: cleanRefName(r.name, `${r.type}:${r.id}`) })) } : {}),
+      },
+    ),
+  // 镜头关联资产（角色/场景/道具）及各自最佳造型图 file_id——作帧生成参考图
   shotLinkedAssets: (shotId: string) =>
-    get<Paged<{ type: string; id: string; image_id: number | null; file_id: string | null }>>(
+    get<Paged<{ type: string; id: string; image_id: number | null; file_id: string | null; name: string; thumbnail?: string }>>(
       `/studio/shots/${shotId}/linked-assets?page_size=50`,
     ).then((d) => d.items),
   // 取该镜头可用的参考图（角色优先→场景→道具，最多 6 张）：一致性的关键——
@@ -140,9 +172,11 @@ export const api = {
   // 注意：bridge 拆镜只写 detail.scene_id 不建 scene/prop links，linked-assets 只有角色，
   // 场景从镜头详情补（同场景取最多 2 个不同角度），道具按名称命中动作/台词文本补。
   async frameRefs(shotId: string, projectId?: string) {
-    const order: Record<string, number> = { character: 0, costume: 1, prop: 2, scene: 3 }
-    const refs = (await api.shotLinkedAssets(shotId).catch(() => [])).filter((x) => x.file_id)
+    const order: Record<string, number> = { character: 0, prop: 1, scene: 2 }
+    const refs = (await api.shotLinkedAssets(shotId).catch(() => []))
+      .filter((x) => x.file_id && x.type !== 'costume')
     const detail = await api.shotDetail(shotId)
+    let sceneName = ''
 
     // 道具：仅名称命中本镜动作/台词的才算必要（≤2）
     if (projectId && detail && !refs.some((r) => r.type === 'prop')) {
@@ -150,7 +184,7 @@ export const api = {
       const props = await api.entities('prop', projectId).catch(() => [] as Entity[])
       for (const p of props.filter((x) => x.name && text.includes(x.name)).slice(0, 2)) {
         const im = (await api.entityImages('prop', p.id).catch(() => []))[0]
-        if (im?.file_id) refs.push({ type: 'prop', id: p.id, image_id: im.id, file_id: im.file_id })
+        if (im?.file_id) refs.push({ type: 'prop', id: p.id, name: im.name || p.name, image_id: im.id, file_id: im.file_id })
       }
     }
 
@@ -159,32 +193,53 @@ export const api = {
     let sceneQuota = ['ECU', 'CU'].includes(cam) ? 0 : ['MCU', 'MS'].includes(cam) ? 1 : 2
     if (!refs.length) sceneQuota = Math.max(sceneQuota, 1)
     if (detail?.scene_id && sceneQuota > 0 && !refs.some((r) => r.type === 'scene')) {
+      if (projectId) {
+        const scenes = await api.entities('scene', projectId).catch(() => [] as Entity[])
+        sceneName = scenes.find((x) => x.id === detail.scene_id)?.name || ''
+      }
       const imgs = (await api.entityImages('scene', detail.scene_id).catch(() => [])).filter((x: any) => x.file_id)
       // 近景优先细节角度，远景优先主视角+反打
       const pref = ['ECU', 'CU', 'MCU'].includes(cam) ? ['DETAIL', 'FRONT', 'BACK'] : ['FRONT', 'BACK', 'DETAIL']
       imgs.sort((a: any, b: any) => pref.indexOf(a.view_angle) - pref.indexOf(b.view_angle))
       imgs.slice(0, sceneQuota).forEach((im: any) =>
-        refs.push({ type: 'scene', id: detail.scene_id, image_id: im.id, file_id: im.file_id }))
+        refs.push({ type: 'scene', id: detail.scene_id, name: im.name || sceneName || '场景参考图', image_id: im.id, file_id: im.file_id }))
     }
-    return refs.sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9)).slice(0, 6)
+    return refs
+      .map((r) => ({ ...r, name: cleanRefName(r.name, `${r.type}:${r.id}`) }))
+      .sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9))
+      .slice(0, 6)
   },
-  // 有场景/道具参考时，提示词追加硬约束
+  // 参考图关系由后端最终渲染器根据实际映射补齐，前端不拼固定模板话。
   refGuard(refs: { type: string }[]) {
-    const hasS = refs.some((r) => r.type === 'scene')
-    const hasP = refs.some((r) => r.type === 'prop')
-    if (!hasS && !hasP) return ''
-    const parts = []
-    if (hasS) parts.push('场景的空间结构、陈设与材质')
-    if (hasP) parts.push('道具的外观与细节')
-    return `。严格遵循参考图：${parts.join('，')}，均以参考图为准，不得改变`
+    return ''
   },
   createFrameImageTask: (shotId: string, frameType: FrameType, prompt: string, targetRatio = '9:16', refs?: any[]) =>
     post<{ task_id: string }>(`/studio/image-tasks/shot/${shotId}/frame-image-tasks`, {
       frame_type: frameType,
       prompt,
       target_ratio: targetRatio,
-      ...(refs?.length ? { images: refs } : {}),
+      ...(refs?.length ? { images: refs.map((r) => ({ ...r, name: cleanRefName(r.name, `${r.type}:${r.id}`) })) } : {}),
     }).then((d) => d.task_id),
+  createFrameImageBatch: (items: { shot_id: string; name?: string; frame_type?: FrameType; images?: any[] }[], targetRatio = '9:16') =>
+    post<{ batch_id: string; total: number }>('/studio/image-tasks/frame-batches', {
+      target_ratio: targetRatio,
+      items: items.map((it) => ({
+        ...it,
+        frame_type: it.frame_type || 'key',
+        images: (it.images || []).map((r) => ({ ...r, name: cleanRefName(r.name, `${r.type}:${r.id}`) })),
+      })),
+    }),
+  frameImageBatchStatus: (batchId: string) =>
+    get<AssetImageBatchStatus>(`/studio/image-tasks/frame-batches/${batchId}`),
+  async pollFrameImageBatch(batchId: string, onProgress?: (s: AssetImageBatchStatus) => void, isCancelled?: () => boolean) {
+    for (;;) {
+      if (isCancelled?.()) return null
+      const s = await api.frameImageBatchStatus(batchId)
+      onProgress?.(s)
+      if (s.status === 'succeeded' || s.status === 'failed' || s.status === 'cancelled') return s
+      await sleep(2500)
+    }
+  },
   taskStatus: (taskId: string) => get<TaskStatus>(`/film/tasks/${taskId}/status`),
   taskResult: (taskId: string) => get<{ status: string; result: any; error: string }>(`/film/tasks/${taskId}/result`),
 
@@ -222,6 +277,19 @@ export const api = {
     const hit = imgs.find((x) => x.id === imageId) || imgs[0]
     if (!hit?.file_id) throw new Error('任务完成但未返回图片')
     return hit.file_id
+  },
+  createAssetImageBatch: (items: { type: string; id: string; name: string; image_id: number; prompt: string }[]) =>
+    post<{ batch_id: string; total: number }>('/studio/image-tasks/asset-batches', { items }),
+  assetImageBatchStatus: (batchId: string) =>
+    get<AssetImageBatchStatus>(`/studio/image-tasks/asset-batches/${batchId}`),
+  async pollAssetImageBatch(batchId: string, onProgress?: (s: AssetImageBatchStatus) => void, isCancelled?: () => boolean) {
+    for (;;) {
+      if (isCancelled?.()) return null
+      const s = await api.assetImageBatchStatus(batchId)
+      onProgress?.(s)
+      if (s.status === 'succeeded' || s.status === 'failed' || s.status === 'cancelled') return s
+      await sleep(2500)
+    }
   },
 
   // —— pipeline 文本三步(视觉词典/镜头分镜/视听单元)，走 bridge/pipeline_server(:5280) ——

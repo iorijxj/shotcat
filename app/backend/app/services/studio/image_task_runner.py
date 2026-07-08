@@ -31,6 +31,7 @@ from app.services.studio.file_usages import (
     sync_usage_from_shot_context,
     upsert_file_usage,
 )
+from app.services.studio.entity_image_names import default_name_for_relation_image
 from app.services.studio.shot_status import mark_shot_generating, recompute_shot_status
 from app.services.studio.image_tasks import load_provider_config, resolve_image_model
 from app.services.worker.async_task_support import cancel_if_requested_async
@@ -76,7 +77,11 @@ async def _persist_images_to_assets(
         session,
         url=item.url,
         b64_data=item.b64_json,
-        name=f"{relation_type}-{relation_entity_id}",
+        name=await default_name_for_relation_image(
+            session,
+            relation_type=relation_type,
+            relation_entity_id=relation_entity_id,
+        ),
         prefix=f"generated-images/{relation_type}/{relation_entity_id}",
     )
     file_id = file_obj.id

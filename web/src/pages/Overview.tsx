@@ -8,7 +8,7 @@ const STAGES: { to: string; label: string; desc: string; icon: string; main?: bo
   { to: '/script', label: '剧本', desc: '接原点产出 · 分集正文', icon: 'script' },
   { to: '/cast', label: '设定', desc: '角色/场景/道具/服装 + 造型图', icon: 'cast' },
   { to: '/board', label: '分镜', desc: '镜头级时序 · 景别机位', icon: 'board', main: true },
-  { to: '/frames', label: '画面', desc: '首/关/尾帧 · 图生视频', icon: 'frames' },
+  { to: '/frames', label: '画面', desc: '关键帧 · 生图', icon: 'frames' },
   { to: '/gallery', label: '总览', desc: '全集画面一览', icon: 'gallery' },
 ]
 

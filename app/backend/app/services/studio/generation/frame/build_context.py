@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import re
+
 from app.models.studio import ShotFrameType
 from app.schemas.studio.shots import ShotFramePromptMappingRead, ShotLinkedAssetItem
 from app.services.studio.generation.shared.types import GenerationContext
+
+
+def _clean_reference_name(name: str | None, fallback: str) -> str:
+    value = str(name or "").strip() or fallback
+    value = re.sub(r"[-－_ ]?默认服装[（(][^）)]+[）)]", "", value)
+    for token in ("-默认服装", "－默认服装", "_默认服装", " 默认服装", "默认服装"):
+        value = value.replace(token, "")
+    return value.strip(" -_－") or fallback
 
 
 def build_ordered_shot_frame_references(
@@ -22,7 +32,7 @@ def build_ordered_shot_frame_references(
                 token=f"图{len(mappings) + 1}",
                 type=item.type,
                 id=item.id,
-                name=(item.name or "").strip() or item.id,
+                name=_clean_reference_name(item.name, item.id),
                 file_id=file_id,
             )
         )

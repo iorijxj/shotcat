@@ -18,8 +18,6 @@ from app.core.task_manager.types import TaskStatus
 from app.models.studio import (
     Chapter,
     Character,
-    Costume,
-    ProjectCostumeLink,
     ProjectPropLink,
     ProjectSceneLink,
     Prop,
@@ -62,6 +60,74 @@ def _compact_text(value: str | None) -> str:
     return str(value or "").strip()
 
 
+_SPECIAL_CLOTHING_TERMS = (
+    "校服",
+    "制服",
+    "军装",
+    "警服",
+    "礼服",
+    "婚纱",
+    "戏服",
+    "古装",
+    "盔甲",
+    "防护服",
+    "雨衣",
+    "白大褂",
+    "病号服",
+    "囚服",
+    "工装",
+    "工作服",
+    "舞台服",
+    "演出服",
+    "宇航服",
+    "潜水服",
+)
+
+_GENERIC_CLOTHING_TERMS = (
+    "默认服装",
+    "日常服装",
+    "日常穿着",
+    "普通衣服",
+    "普通服装",
+    "常规服装",
+    "简洁日常服装",
+    "简洁日常",
+    "便装",
+    "浅色上衣",
+    "长裤",
+    "长裙",
+)
+
+
+def _has_special_clothing(text: str) -> bool:
+    return any(term in text for term in _SPECIAL_CLOTHING_TERMS)
+
+
+def _strip_generic_clothing_text(text: str) -> str:
+    """角色描述进入画面提示词前，去掉普通默认穿着；特殊服装保留。"""
+    value = _compact_text(text)
+    if not value:
+        return ""
+    parts = re.split(r"([；;，,。])", value)
+    kept: list[str] = []
+    for idx in range(0, len(parts), 2):
+        piece = parts[idx].strip()
+        sep = parts[idx + 1] if idx + 1 < len(parts) else ""
+        if not piece:
+            continue
+        if any(term in piece for term in _GENERIC_CLOTHING_TERMS) and _has_special_clothing(piece):
+            piece = _cleanup_default_clothing_mentions(piece).strip()
+            if not piece:
+                continue
+        elif any(term in piece for term in _GENERIC_CLOTHING_TERMS):
+            continue
+        if re.search(r"(穿|身着|穿着|衣服|服装|上衣|裤|裙|外套|衬衫|T恤|针织|毛衣|风衣|夹克|鞋|靴|帽|围巾)", piece) and not _has_special_clothing(piece):
+            continue
+        kept.append(piece + sep)
+    cleaned = "".join(kept).strip("；;，,。 ")
+    return cleaned or value
+
+
 def _join_context_lines(lines: list[str]) -> str:
     cleaned = [line for line in lines if line]
     return "\n".join(cleaned) if cleaned else "无"
@@ -75,19 +141,15 @@ def _build_character_context(characters: list[Character]) -> str:
     for character in characters:
         fragments: list[str] = []
         if _compact_text(character.description):
-            fragments.append(_compact_text(character.description))
+            desc = _strip_generic_clothing_text(_compact_text(character.description))
+            if desc:
+                fragments.append(desc)
         actor = getattr(character, "actor", None)
         if actor is not None and _compact_text(getattr(actor, "name", None)):
             actor_desc = f"演员形象：{_compact_text(getattr(actor, 'name', None))}"
             if _compact_text(getattr(actor, "description", None)):
                 actor_desc += f"（{_compact_text(getattr(actor, 'description', None))}）"
             fragments.append(actor_desc)
-        costume = getattr(character, "costume", None)
-        if costume is not None and _compact_text(getattr(costume, "name", None)):
-            costume_desc = f"默认服装：{_compact_text(getattr(costume, 'name', None))}"
-            if _compact_text(getattr(costume, "description", None)):
-                costume_desc += f"（{_compact_text(getattr(costume, 'description', None))}）"
-            fragments.append(costume_desc)
         line = f"- {character.name}"
         if fragments:
             line += f"：{'；'.join(fragments)}"
@@ -95,7 +157,7 @@ def _build_character_context(characters: list[Character]) -> str:
     return _join_context_lines(lines)
 
 
-def _build_named_asset_context(assets: list[Scene] | list[Prop] | list[Costume]) -> str:
+def _build_named_asset_context(assets: list[Scene] | list[Prop]) -> str:
     lines: list[str] = []
     for asset in assets:
         line = f"- {asset.name}"
@@ -111,7 +173,6 @@ def _build_art_direction_context(
     characters: list[Character],
     scenes: list[Scene],
     props: list[Prop],
-    costumes: list[Costume],
 ) -> str:
     """生成艺术指导统筹说明，统一约束画面提示词的剧情、风格和实体一致性。"""
     project_name = _compact_text(getattr(project, "name", None))
@@ -126,7 +187,7 @@ def _build_art_direction_context(
     if project_parts:
         lines.append(f"项目基调：{'；'.join(project_parts)}。")
     if characters:
-        lines.append("角色一致性：保留已确认角色的年龄、气质、外貌、服装和身份，不要改名、换脸或改造为不符合剧情的人设。")
+        lines.append("角色一致性：保留已确认角色的年龄、气质、外貌和身份，不要改名、换脸或改造为不符合剧情的人设。")
     else:
         lines.append("空镜一致性：没有角色时，画面应以环境、道具或动作痕迹承担叙事，不要自动添加人物。")
     if scenes:
@@ -135,8 +196,6 @@ def _build_art_direction_context(
     if props:
         prop_names = "、".join(prop.name for prop in props[:3])
         lines.append(f"道具控制：{prop_names} 只在符合剧情动作或画面焦点时出现，不要喧宾夺主。")
-    if costumes:
-        lines.append("服装控制：服装用于稳定角色身份、时代和生活状态，不要抢占画面主体。")
     lines.append("生成时先判断当前帧真正要表达什么，再选择画面主体、空间重点、光线和情绪，不要平均罗列所有信息。")
     return "\n".join(lines)
 
@@ -146,7 +205,6 @@ def _build_subject_priority(
     characters: list[Character],
     scenes: list[Scene],
     props: list[Prop],
-    costumes: list[Costume],
 ) -> str:
     parts: list[str] = []
     if characters:
@@ -162,9 +220,6 @@ def _build_subject_priority(
     if props:
         prop_names = "、".join(prop.name for prop in props[:2])
         parts.append(f"道具 {prop_names} 仅在进入主动作或构图焦点时重点写入")
-    if costumes:
-        costume_names = "、".join(costume.name for costume in costumes[:2])
-        parts.append(f"服装 {costume_names} 主要用于强化人物外观一致性，不必喧宾夺主")
     return "；".join(parts) if parts else "优先根据镜头信息突出主角色和主场景，不必平均铺陈所有元素"
 
 
@@ -206,7 +261,7 @@ def _build_continuity_guidance(
     current_shot: Shot,
     next_shot: Shot | None,
 ) -> str:
-    """基于相邻镜头关系生成简明连续性约束。"""
+    """基于相邻镜头关系生成静态图片可用的空间一致性约束。"""
     guidance: list[str] = []
     current_detail = getattr(current_shot, "detail", None)
     current_scene_id = str(getattr(current_detail, "scene_id", "") or "")
@@ -216,16 +271,14 @@ def _build_continuity_guidance(
     next_scene_id = str(getattr(next_detail, "scene_id", "") or "")
 
     if previous_shot is not None:
-        guidance.append("当前镜头应承接上一镜头的动作与情绪，不要像全新场面重新开局")
+        guidance.append("仅参考上一镜头的可见空间方向、左右轴线、主体朝向和场景材质，不写动作承接")
         if current_scene_id and previous_scene_id and current_scene_id == previous_scene_id:
-            guidance.append("上一镜头与当前镜头处于同一场景，优先保持空间轴线和主体朝向稳定")
-        if _enum_value(getattr(previous_detail, "movement", None)) and _enum_value(getattr(current_detail, "movement", None)):
-            guidance.append("若镜头语言未明显变化，应视为同一动作链条中的推进或延续")
+            guidance.append("上一镜头与当前镜头处于同一场景，只保持可见建筑方向、空间轴线、主体朝向、角色左右站位和前后距离稳定")
 
     if next_shot is not None:
-        guidance.append("当前镜头应形成自然收束，为下一镜头预留动作或情绪落点，避免硬切")
+        guidance.append("仅参考下一镜头的可见空间方向和视觉重心，不写未来动作、变化或衔接结果")
         if current_scene_id and next_scene_id and current_scene_id == next_scene_id:
-            guidance.append("下一镜头与当前镜头处于同一场景，尽量保持视觉重心与空间关系可连续延展")
+            guidance.append("下一镜头与当前镜头处于同一场景，只保持画面内可见的空间关系、角色相对位置和材质体系一致")
 
     return "；".join(guidance)
 
@@ -238,34 +291,36 @@ def _build_composition_anchor(
     characters: list[Character],
     scenes: list[Scene],
 ) -> str:
-    """根据镜头语言和相邻镜头关系生成构图锚点建议。"""
+    """根据镜头语言和相邻镜头关系生成静态图片构图锚点建议。"""
     anchors: list[str] = []
     camera_shot = _enum_value(detail.camera_shot)
     movement = _enum_value(detail.movement)
 
     if camera_shot in {"ECU", "CU"}:
-        anchors.append("以主角色面部或关键动作作为画面重心，弱化环境干扰")
+        anchors.append("可视范围集中在主角色面部、手部或关键对象的局部，背景只保留少量可见环境")
     elif camera_shot in {"MS", "FS"}:
-        anchors.append("保持人物与环境同时可读，避免只剩情绪特写或只剩空场")
+        anchors.append("可视范围应同时包含主体全貌或半身与周围关键环境，交代人物和空间关系")
     else:
-        anchors.append("优先建立空间关系，再突出主角色动作")
+        anchors.append("可视范围应优先交代空间整体、入口/通道/建筑边界和主体所在位置")
 
     if movement in {"DOLLY_IN", "ZOOM_IN"}:
-        anchors.append("构图应体现向主体推进的视觉趋势，焦点逐步收束到主角色")
+        anchors.append("按较紧的静态构图处理，让主体或关键对象位于画面视觉中心")
     elif movement in {"DOLLY_OUT", "ZOOM_OUT"}:
-        anchors.append("构图应体现从主体向环境退开的趋势，保留更多空间信息")
+        anchors.append("按较宽的静态构图处理，保留更多前景、中景和背景空间，不描述拉远")
+    elif movement in {"PAN", "TILT", "TRACK", "CRANE", "HANDHELD", "STEADICAM"}:
+        anchors.append("只取该镜头语言对应的静态取景方向和画面边界，使用稳定静态构图")
     elif movement == "STATIC":
-        anchors.append("保持构图稳定，不要无故改变主体在画面中的重心位置")
+        anchors.append("保持静态构图稳定，明确主体在画面中的重心位置")
 
     if scenes:
-        anchors.append(f"以场景 {scenes[0].name} 作为空间锚点，保证主体与环境关系清晰")
+        anchors.append(f"以场景 {scenes[0].name} 作为空间锚点，明确镜头朝向、可见区域边界和前中后景")
     if characters:
-        anchors.append(f"优先锁定角色 {characters[0].name} 的朝向和视线，不要无故翻转左右关系")
+        anchors.append(f"优先锁定角色 {characters[0].name} 在画面内的朝向、视线和左右位置")
 
     if previous_shot is not None and str(getattr(getattr(previous_shot, 'detail', None), 'scene_id', '') or '') == str(detail.scene_id or ''):
-        anchors.append("与上一镜头同场景时，尽量延续同一空间轴线和主体朝向")
+        anchors.append("与上一镜头同场景时，只保持静态画面中的空间轴线和主体朝向")
     if next_shot is not None and str(getattr(getattr(next_shot, 'detail', None), 'scene_id', '') or '') == str(detail.scene_id or ''):
-        anchors.append("与下一镜头同场景时，为后续镜头保留稳定的视觉落点与空间方向")
+        anchors.append("与下一镜头同场景时，只保持静态画面中的视觉重心与空间方向")
 
     return "；".join(anchors)
 
@@ -283,7 +338,7 @@ def _build_screen_direction_guidance(
     angle = _enum_value(detail.angle)
 
     if angle == "OVER_SHOULDER":
-        guidance.append("当前镜头为过肩视角，应保持前景肩部与被看对象的左右关系稳定")
+        guidance.append("原始机位为过肩时，改写为稳定平视或轻侧面双人关系；禁止写肩部、肩背或借肩遮挡；保持双方左右站位、前后距离、朝向和视线落点清楚")
     elif angle == "EYE_LEVEL":
         guidance.append("优先保持人物视线水平和对视方向稳定，避免无故翻转左右朝向")
     else:
@@ -292,7 +347,7 @@ def _build_screen_direction_guidance(
     if dialogue_summary.strip():
         guidance.append("存在对白时，优先保证说话者与受话者的视线关系连续")
     if len(character_names) >= 2:
-        guidance.append(f"角色 {character_names[0]} 与 {character_names[1]} 的左右站位和对视方向应保持一致")
+        guidance.append(f"角色 {character_names[0]} 与 {character_names[1]} 的左右站位、前后距离、朝向和对视方向应保持一致")
     elif character_names:
         guidance.append(f"角色 {character_names[0]} 的朝向与视线落点应在相邻镜头中保持延续")
 
@@ -348,28 +403,28 @@ def _build_frame_specific_guidance(
     script_excerpt: str,
     action_beats: list[str],
 ) -> str:
-    """按首帧/关键帧/尾帧生成专项提示，拉开三类帧职责差异。"""
+    """按首帧/关键帧/尾帧生成静态图片专项提示。"""
     guidance: list[str] = []
     if frame_type == "first":
-        guidance.append("首帧应优先建立空间、主体初始站位和第一眼视觉印象，不要直接跳到动作尾声")
-        guidance.append("首帧只表现事件触发瞬间或最初反应的起始状态，不要直接写成后续完成动作、最终姿态或情绪爆发结果")
-        guidance.append("若剧本存在连续反应链，优先写成动作刚开始、尚未完成或被打断的状态，例如手刚松脱、身体骤然僵住、人物尚未完全蹲下")
+        guidance.append("首帧应优先建立静态空间、主体初始站位、镜头朝向和第一眼可见范围")
+        guidance.append("首帧只写当前图片内可见的主体状态和环境，不写后续动作、变化过程或结果")
+        guidance.append("若剧本存在连续反应链，只截取可见的静态起始姿态，不描述动作链本身")
         if _has_sequential_reaction_chain(script_excerpt, detail.description):
-            guidance.append("当前镜头存在明显连续反应链，首帧必须截取触发后最早的可见瞬间，禁止直接落到捂耳、蹲下、倒地或转身完成态")
+            guidance.append("当前镜头存在明显连续反应链，首帧只保留画面内最早可见的姿态和空间关系，不写过程")
         if previous_shot is not None:
-            guidance.append("首帧要承接上一镜头结束状态，但仍应让观众迅速看清当前空间与主体起始状态")
+            guidance.append("首帧可参考上一镜头的可见空间轴线和主体朝向，但不得写上一镜头动作")
         if _enum_value(detail.camera_shot) in {"LS", "ELS", "MLS"}:
-            guidance.append("当前景别较大时，优先把环境、人物位置关系和进入方向交代清楚")
+            guidance.append("当前景别较大时，优先写清环境可视范围、人物位置关系和镜头观看方向")
     elif frame_type == "last":
-        guidance.append("尾帧应强调动作收束、情绪余韵或视线停留点，不要重新铺开新的动作起点")
+        guidance.append("尾帧应写成单张静态图片中的稳定主体姿态、视线停留点和可见环境")
         if next_shot is not None:
-            guidance.append("尾帧应为下一镜头留下自然衔接的姿态、视线或情绪落点")
-        guidance.append("尾帧中的主体姿态应更稳定，便于后续镜头承接")
+            guidance.append("尾帧可参考下一镜头的空间方向，但不得写下一镜头或未来动作")
+        guidance.append("尾帧中的主体姿态应清晰稳定，只描述当前图片可见状态")
     else:
-        guidance.append("关键帧应锁定镜头内最有戏剧张力或信息密度最高的瞬间，不要平均描述整个过程")
-        guidance.append("优先选择动作峰值、情绪爆点或构图最有代表性的瞬间")
+        guidance.append("关键帧应锁定镜头内最具代表性的单张静态画面，不要平均描述整个过程")
+        guidance.append("优先选择构图最清楚、信息最集中、主体姿态最有代表性的静态状态")
         if _enum_value(detail.movement) in {"DOLLY_IN", "ZOOM_IN", "TRACK"}:
-            guidance.append("若镜头存在推进或跟拍，关键帧应体现运动过程中最集中、最有压迫感的画面")
+            guidance.append("若原镜头存在推进或跟拍，只转化为更紧凑的静态取景，不写推进、移动或运动过程")
     beat_item = pick_action_beat_for_frame(frame_type, action_beats)
     if beat_item is not None:
         phase_label = {
@@ -377,7 +432,7 @@ def _build_frame_specific_guidance(
             "peak": "峰值阶段",
             "aftermath": "收束阶段",
         }.get(beat_item.phase, "当前阶段")
-        guidance.append(f"当前帧优先围绕动作拍点“{beat_item.text}”组织画面（{phase_label}），不要越级跳到其他阶段")
+        guidance.append(f"当前帧只把动作拍点“{beat_item.text}”转化为当前图片内可见的静态姿态、对象位置和环境关系（{phase_label}），不写过程")
     return "；".join(guidance)
 
 
@@ -623,8 +678,41 @@ def _cleanup_generated_prompt(prompt: str) -> str:
             continue
         cleaned.append(line)
     if after_generation_heading and cleaned:
-        return "\n".join(cleaned).strip()
-    return "\n".join(cleaned).strip()
+        return _cleanup_default_clothing_mentions("\n".join(cleaned).strip())
+    return _cleanup_default_clothing_mentions("\n".join(cleaned).strip())
+
+
+def _cleanup_default_clothing_mentions(prompt: str) -> str:
+    """去掉无意义的默认服装描述；特殊服装词不处理。"""
+    text = str(prompt or "").strip()
+    if not text:
+        return text
+    name_part = r"[\u4e00-\u9fffA-Za-z0-9_·（）()]{1,30}?"
+    text = re.sub(rf"(身着|穿着|身穿|穿){name_part}[-－_ ]默认服装[（(]([^）)]+)[）)]", r"\1\2", text)
+    text = re.sub(rf"(?<![\u4e00-\u9fffA-Za-z0-9_·（）()]){name_part}[-－_ ]默认服装[（(]([^）)]+)[）)]", r"\1", text)
+    text = re.sub(rf"(身着|穿着|身穿|穿){name_part}[-－_ ]默认服装", r"\1", text)
+    text = re.sub(rf"(?<![\u4e00-\u9fffA-Za-z0-9_·（）()]){name_part}[-－_ ]默认服装", "", text)
+    patterns = (
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认衣服",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?默认穿着",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?日常服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?普通服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?普通衣服",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?简洁日常服装",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?简洁日常衣物",
+        r"[，,；;。\s]*(身着|穿着|穿|身穿)?便装",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"^[，,；;。\s]+", "", text)
+    text = re.sub(r"^[和及与、\s]+", "", text)
+    text = re.sub(r"[和及与、\s]+([，,；;。])", r"\1", text)
+    text = re.sub(r"[，,；;]\s*([。])", r"\1", text)
+    text = text.replace("过肩视角", "平视轻侧面视角")
+    text = text.replace("过肩镜头", "平视轻侧面构图")
+    return text.strip()
 
 
 def _validate_generated_prompt(prompt: str, input_dict: dict[str, object]) -> list[str]:
@@ -634,6 +722,52 @@ def _validate_generated_prompt(prompt: str, input_dict: dict[str, object]) -> li
         return ["生成结果为空"]
     if "## 图片内容说明" in text or "## 生成内容" in text or re.search(r"(^|\n)\s*图\d+\s*[:：]", text):
         issues.append("结果混入了图片映射说明，应只保留基础提示词")
+    video_terms = (
+        "运镜",
+        "推进",
+        "拉远",
+        "跟拍",
+        "横摇",
+        "缓缓",
+        "逐渐",
+        "逐步",
+        "动作链",
+        "运动过程",
+        "变化过程",
+        "后续",
+        "下一镜头",
+        "上一镜头",
+        "镜头开始",
+        "镜头结束",
+        "画面外",
+        "不可见区域",
+        "看不见的",
+    )
+    hits = [term for term in video_terms if term in text]
+    if hits:
+        issues.append(f"结果混入视频化或不可见区域表达：{'、'.join(hits[:5])}；应改为单张静态生图提示词，只写画面内可见内容")
+    if any(term in text for term in ("肩部", "肩背", "借肩", "前景肩")):
+        issues.append("结果不应使用肩部/肩背/借肩遮挡构图；应改为横向构图、高角度构图、平视轻侧面或双人关系构图")
+    if any(term in text for term in ("默认服装", "默认衣服", "默认穿着", "日常服装", "普通衣服", "普通服装", "便装")):
+        issues.append("结果不应强调普通默认穿着；只有校服、制服、礼服、雨衣、工作服等特殊服装才需要写入")
+    if "过肩" in text:
+        issues.append("结果不应使用过肩视角；应改为稳定平视或轻侧面双人关系，避免前景肩背遮挡导致图像错乱")
+    required_groups = {
+        "景别或视角": ("景", "近景", "中景", "远景", "全景", "特写", "视角", "俯视", "仰视", "平视", "低机位", "高机位", "广角"),
+        "主体外观或姿态": ("外貌", "发型", "姿态", "站", "坐", "侧身", "背影", "表情", "建筑", "空间", "陈设", "道具", "轮廓"),
+        "场景环境": ("场景", "环境", "室内", "室外", "走廊", "教室", "街道", "房间", "建筑", "地面", "墙面", "门窗", "天空"),
+        "光影": ("光", "阴影", "晨光", "夕阳", "逆光", "侧光", "自然光", "柔光", "明暗"),
+        "色彩": ("色", "色调", "冷暖", "暖色", "冷色", "中性影调", "低饱和", "高饱和"),
+        "构图或可视范围": ("构图", "前景", "中景", "背景", "画面", "左侧", "右侧", "中央", "纵深", "可见", "范围", "边界"),
+        "质感": ("质感", "材质", "写实", "电影感", "胶片", "纹理", "颗粒", "细节", "实拍"),
+    }
+    missing_groups = [
+        label
+        for label, keywords in required_groups.items()
+        if not any(keyword in text for keyword in keywords)
+    ]
+    if missing_groups:
+        issues.append(f"完整画面 Prompt 缺少这些要素：{'、'.join(missing_groups[:4])}；应融合景别、视角、主体外貌与姿态、场景环境、光影、色彩、构图、质感")
     primary_characters = _extract_context_names(str(input_dict.get("character_context") or ""))
     if primary_characters:
         lead_names = primary_characters[:2]
@@ -664,12 +798,8 @@ async def build_run_args(
             selectinload(Shot.character_links)
             .selectinload(ShotCharacterLink.character)
             .selectinload(Character.actor),
-            selectinload(Shot.character_links)
-            .selectinload(ShotCharacterLink.character)
-            .selectinload(Character.costume),
             selectinload(Shot.scene_links).selectinload(ProjectSceneLink.scene),
             selectinload(Shot.prop_links).selectinload(ProjectPropLink.prop),
-            selectinload(Shot.costume_links).selectinload(ProjectCostumeLink.costume),
         )
         .where(Shot.id == shot_id)
     )
@@ -716,11 +846,6 @@ async def build_run_args(
         link.prop
         for link in list(getattr(shot, "prop_links", []) or [])
         if getattr(link, "prop", None) is not None
-    ]
-    costumes = [
-        link.costume
-        for link in list(getattr(shot, "costume_links", []) or [])
-        if getattr(link, "costume", None) is not None
     ]
     scenes = list(scenes_by_id.values())
 
@@ -781,19 +906,16 @@ async def build_run_args(
             "character_context": _build_character_context(characters),
             "scene_context": _build_named_asset_context(scenes),
             "prop_context": _build_named_asset_context(props),
-            "costume_context": _build_named_asset_context(costumes),
             "art_direction": _build_art_direction_context(
                 project=project,
                 characters=characters,
                 scenes=scenes,
                 props=props,
-                costumes=costumes,
             ),
             "subject_priority": _build_subject_priority(
                 characters=characters,
                 scenes=scenes,
                 props=props,
-                costumes=costumes,
             ),
             "previous_shot_title": previous_title,
             "previous_shot_script_excerpt": previous_excerpt,
@@ -849,11 +971,13 @@ async def run_shot_frame_prompt_task(
                 agent = ShotKeyFramePromptAgent(llm)
             input_dict.setdefault("retry_guidance", "")
             result = await agent.aextract(**input_dict)
+            result.prompt = _cleanup_default_clothing_mentions(result.prompt)
             quality_issues = _validate_generated_prompt(result.prompt, input_dict)
             if quality_issues:
                 retry_input = dict(input_dict)
                 retry_input["retry_guidance"] = _build_retry_guidance(quality_issues)
                 retry_result = await agent.aextract(**retry_input)
+                retry_result.prompt = _cleanup_default_clothing_mentions(retry_result.prompt)
                 retry_issues = _validate_generated_prompt(retry_result.prompt, retry_input)
                 if not retry_issues:
                     input_dict = retry_input
