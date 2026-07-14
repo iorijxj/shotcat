@@ -53,6 +53,7 @@ export interface AssetImageBatchStatus {
   running: number
   succeeded: number
   failed: number
+  cancelled: number
   current?: string
   current_task_id?: string | null
   error?: string
@@ -141,6 +142,10 @@ export const api = {
     fetch(`${BASE}/studio/entities/${type}/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
     }).then((r) => { if (!r.ok) throw new Error(`更新失败 ${r.status}`) }),
+  deleteEntity: (type: string, id: string) =>
+    fetch(`${BASE}/studio/entities/${type}/${id}`, { method: 'DELETE' }).then((r) => {
+      if (!r.ok) throw new Error(`删除失败 ${r.status}`)
+    }),
 
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>
@@ -176,8 +181,8 @@ export const api = {
     ).then((d) => d.items),
   // 取该镜头可用的参考图（角色优先→场景→道具，最多 6 张）：一致性的关键——
   // 有参考图时后端 OpenAI 通道自动走 /images/edits（图生图），脸/场景/道具都锚在造型图上。
-  // 注意：bridge 拆镜只写 detail.scene_id 不建 scene/prop links，linked-assets 只有角色，
-  // 场景从镜头详情补（同场景取最多 2 个不同角度），道具按名称命中动作/台词文本补。
+  // 新拆镜会为当前画面明确出现的道具建立镜头关联；历史项目没有该关联时，
+  // 场景从镜头详情补（同场景取最多 2 个不同角度），道具再按名称命中动作/台词文本补。
   async frameRefs(shotId: string, projectId?: string) {
     const order: Record<string, number> = { character: 0, prop: 1, scene: 2 }
     const refs = (await api.shotLinkedAssets(shotId).catch(() => []))
@@ -239,6 +244,8 @@ export const api = {
     }),
   frameImageBatchStatus: (batchId: string) =>
     get<AssetImageBatchStatus>(`/studio/image-tasks/frame-batches/${batchId}`),
+  cancelFrameImageBatch: (batchId: string) =>
+    post<AssetImageBatchStatus>(`/studio/image-tasks/frame-batches/${batchId}/cancel`, {}),
   async pollFrameImageBatch(batchId: string, onProgress?: (s: AssetImageBatchStatus) => void, isCancelled?: () => boolean) {
     for (;;) {
       if (isCancelled?.()) return null
@@ -269,13 +276,13 @@ export const api = {
     return r.id
   },
   // 生成造型图：建槽 → 投任务 → 轮询 → 返回 file_id
-  async generateEntityImage(type: string, id: string, prompt: string, onProgress?: (p: number) => void, isCancelled?: () => boolean): Promise<string> {
+  async generateEntityImage(type: string, id: string, prompt: string, images: string[] = [], onProgress?: (p: number) => void, isCancelled?: () => boolean): Promise<string> {
     const imageId = await api.ensureImageSlot(type, id)
     const path =
       type === 'character' ? `/studio/image-tasks/characters/${id}/image-tasks`
       : type === 'actor' ? `/studio/image-tasks/actors/${id}/image-tasks`
       : `/studio/image-tasks/assets/${type}/${id}/image-tasks`
-    const { task_id } = await post<{ task_id: string }>(path, { image_id: imageId, prompt })
+    const { task_id } = await post<{ task_id: string }>(path, { image_id: imageId, prompt, images })
     const s = await api.pollTask(task_id, onProgress, 120, isCancelled) // 图像任务上限 5 分钟（三视图大图常超 150s）
     if (s.status !== 'succeeded') {
       const r = await api.taskResult(task_id).catch(() => null)
@@ -286,10 +293,12 @@ export const api = {
     if (!hit?.file_id) throw new Error('任务完成但未返回图片')
     return hit.file_id
   },
-  createAssetImageBatch: (items: { type: string; id: string; name: string; image_id: number; prompt: string }[]) =>
+  createAssetImageBatch: (items: { type: string; id: string; name: string; image_id: number; prompt: string; reference_type?: string; reference_entity_id?: string; reference_assets?: { type: string; entity_id: string }[] }[]) =>
     post<{ batch_id: string; total: number }>('/studio/image-tasks/asset-batches', { items }),
   assetImageBatchStatus: (batchId: string) =>
     get<AssetImageBatchStatus>(`/studio/image-tasks/asset-batches/${batchId}`),
+  cancelAssetImageBatch: (batchId: string) =>
+    post<AssetImageBatchStatus>(`/studio/image-tasks/asset-batches/${batchId}/cancel`, {}),
   async pollAssetImageBatch(batchId: string, onProgress?: (s: AssetImageBatchStatus) => void, isCancelled?: () => boolean) {
     for (;;) {
       if (isCancelled?.()) return null

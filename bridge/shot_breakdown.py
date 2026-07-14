@@ -43,6 +43,8 @@ SYS = f"""你是专业分镜师。把剧本拆成【镜头级】分镜。
   即 duration ≥ 对白字数÷4，再加动作/反应的余量
 - characters：**画面中出现的所有角色**名数组（不是"镜头主体"）：
   双人同框(对峙/对坐/并行)必须两人都列；只有画外音/完全不在画内才不列
+- characters 必须从下方给出的“角色造型”中原样选择。角色名带“·状态名”时，状态名就是本镜头要使用的年龄、身份、妆发与服装参考；必须根据当前剧情选对状态，不能只填角色基础名，也不能把不同状态混用。
+- props：画面中实际可见、且需要保持外观一致的关键道具名称数组。只能从下方给出的道具名原样选择；只有本镜头明确看见、拿取、使用或作为构图焦点时才列出，不要按场景常识添加。
 
 【镜头语言多样性硬约束（必须满足，先规划配比再输出）】
 1. 固定取景(STATIC)占比不得超过全片镜头的 40%；其余用不同静态取景建议(PAN/TILT/DOLLY_IN/DOLLY_OUT/TRACK/CRANE/HANDHELD/ZOOM_IN/ZOOM_OUT)变化构图，但 action/description 不得写成运动过程。
@@ -55,11 +57,11 @@ USER_TMPL = """【完整剧本】
 {script}
 
 【本项目场景（scene 字段须用这些名）】{scenes}
-【角色】{chars}
+【角色造型（名称必须原样用于 characters；每行含状态依据）】{chars}
 【道具】{props}
 
 把全剧本拆成镜头级分镜。短片每个场景一般 3-6 个镜头。
-输出 JSON：{{"shots":[{{"scene":"","time":"日","space":"内","title":"","camera_shot":"","angle":"","movement":"","action":"","description":"","reference_relations":"","dialogue":"","duration":6,"characters":[]}}]}}"""
+输出 JSON：{{"shots":[{{"scene":"","time":"日","space":"内","title":"","camera_shot":"","angle":"","movement":"","action":"","description":"","reference_relations":"","dialogue":"","duration":6,"characters":[],"props":[]}}]}}"""
 
 BASE = "http://localhost:8000/api/v1"
 
@@ -124,13 +126,14 @@ def run(pid: str, model: str):
     props = items(f"/studio/entities/prop?project_id={pid}&page_size=100")
     scene_id_by_name = {s["name"]: s["id"] for s in scenes}
     char_id_by_name = {c["name"]: c["id"] for c in chars}
+    prop_id_by_name = {p["name"]: p["id"] for p in props}
 
     print(f"[镜头级分镜] 项目 {pid}｜章节 {ch['id']}｜场景 {len(scenes)}｜模型 {model}")
     print("  GLM 拆镜头中…")
     data = chat_json(SYS, USER_TMPL.format(
         script=script,
         scenes="、".join(scene_id_by_name),
-        chars="、".join(c["name"] for c in chars),
+        chars="\n".join(f"- {c['name']}：{c.get('description', '').replace(chr(10), ' ')}" for c in chars),
         props="、".join(p["name"] for p in props),
     ), model=model, temperature=0.6, timeout=300)
     shots = data.get("shots", [])
@@ -225,8 +228,23 @@ def run(pid: str, model: str):
                     if lc != 400:
                         break
                     time.sleep(1.0)
+        # 关联当前画面实际出现的关键道具，帧图生成据此带入道具设计图作为参考。
+        for nm in dict.fromkeys(s.get("props", []) or []):
+            prop_id = prop_id_by_name.get(nm)
+            if not prop_id:
+                continue
+            for _t in range(6):
+                lc, _ = _req("POST", "/studio/shot-links/prop", {
+                    "project_id": pid,
+                    "chapter_id": ch["id"],
+                    "shot_id": sid,
+                    "asset_id": prop_id,
+                })
+                if lc != 400:
+                    break
+                time.sleep(1.0)
         print(f"    镜{i:>2} [{s.get('camera_shot','?')}/{s.get('movement','?')}] {s.get('title','')[:16]}"
-              + f" 角色{s.get('characters',[])}" + (f"  (detail 失败 {c2})" if c2 >= 400 else ""))
+              + f" 角色{s.get('characters',[])} 道具{s.get('props',[])}" + (f"  (detail 失败 {c2})" if c2 >= 400 else ""))
 
     print(f"\n=== 完成：{ok_shot} 镜头 / {ok_detail} 含景别机位详情，写入章节 {ch['id']} ===")
 

@@ -10,27 +10,67 @@ const CATS = [
 const DATA_CATS = [...CATS, { key: 'costume', label: '服装' }]
 type EntityImage = { id: number; file_id: string; view_angle: string; name?: string }
 
-const PROMPT_TEMPLATE_VERSION = 'prompt-clean-v10'
+const PROMPT_TEMPLATE_VERSION = 'prompt-clean-v11'
 const DEFAULT_REALISTIC_STYLE = '电影感写实，统一中性影调，自然光影，细节清晰，设定集质感。'
-const CLOTHING_RE = /(衣|服|上衣|下装|裤|裙|外套|衬衫|T恤|针织|毛衣|风衣|夹克|校服|制服|鞋|靴|帽|围巾|领口|袖|腰带|包|配饰|颜色|浅色|深色|白色|黑色|蓝色|灰色|棕色|米色|长裤|长裙|短裙)/
 const NON_CLOTHING_RE = /(手拿|拿着|握着|捧着|背着|抱着|携带|旧笔记本|笔记本|书本|汽水|道具)/
 
-function cleanCostumeText(value: string) {
-  const parts = value
-    .split(/[，,。；;、]+/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .filter((part) => CLOTHING_RE.test(part) && !NON_CLOTHING_RE.test(part))
-  return parts.join('，')
+function repairLegacyDescriptionLine(value: string) {
+  let repaired = value
+  // 旧项目中少量中文说明曾被 UTF-8 误按西文读取一至两次；只修复这种特征文本。
+  if (!/[ÃÂâã]/.test(repaired)) return repaired
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const codes = Array.from(repaired).map((char) => char.charCodeAt(0))
+    if (codes.some((code) => code > 255)) break
+    const decoded = new TextDecoder('utf-8', { fatal: false }).decode(Uint8Array.from(codes))
+    if (!decoded || decoded.includes('\ufffd')) break
+    repaired = decoded
+    if (/[\u4e00-\u9fff【】]/.test(repaired)) break
+  }
+  return repaired
 }
 
-function cleanCharacterAppearance(value: string) {
-  const parts = value
-    .split(/[，,。；;、]+/)
+function descriptionLines(description?: string) {
+  return (description || '').split(/\n+/).map(repairLegacyDescriptionLine)
+}
+
+function cleanCharacterLook(value: string) {
+  return value
+    .split(/\n+/)
     .map((part) => part.trim())
     .filter(Boolean)
-    .filter((part) => !CLOTHING_RE.test(part) && !NON_CLOTHING_RE.test(part))
-  return parts.join('，')
+    .filter((part) => !NON_CLOTHING_RE.test(part))
+    .join('；')
+}
+
+function stateReferenceName(description?: string) {
+  const line = descriptionLines(description).find((value) => value.startsWith('【状态关系】派生自：'))
+  return line?.replace('【状态关系】派生自：', '').trim() || ''
+}
+
+function stateRelationLabel(description?: string) {
+  const line = descriptionLines(description).find((value) => value.startsWith('【状态关系】'))
+  if (!line) return ''
+  return line.includes('基准') ? '基准造型' : '派生状态'
+}
+
+type StrongVisualReference = { content: string; characters: string[]; scenes: string[] }
+
+function strongVisualReference(description?: string): StrongVisualReference | null {
+  const line = descriptionLines(description).find((value) => value.startsWith('【强关联参考】'))
+  if (!line) return null
+  const read = (label: string) => new RegExp(`${label}：([^；]*)`).exec(line)?.[1]?.trim() || ''
+  const names = (value: string) => value && value !== '无' ? value.split('、').map((name) => name.trim()).filter(Boolean) : []
+  return { content: read('内容'), characters: names(read('角色')), scenes: names(read('场景')) }
+}
+
+function visibleDescription(description?: string) {
+  return descriptionLines(description)
+    .join('\n')
+    .split('【表演基线】')[0]
+    .split(/\n+/)
+    .map((value) => value.trim())
+    .filter((value) => value && !value.startsWith('【状态关系】') && !value.startsWith('【强关联参考】'))
+    .join('\n')
 }
 
 export default function Cast({ project }: { project: Project | null }) {
@@ -102,7 +142,7 @@ export default function Cast({ project }: { project: Project | null }) {
         )
         if (!stopped && done) {
           localStorage.removeItem(`shotcat:assetImageBatch:${project.id}`)
-          setErr(done.failed ? `批量生成完成，失败 ${done.failed} 项。` : '批量生成完成。')
+          setErr(done.status === 'cancelled' ? `已停止队列，保留已完成的 ${done.succeeded} 项。` : done.failed ? `批量生成完成，失败 ${done.failed} 项。` : '批量生成完成。')
           await loadAll()
           setBatch(null)
         }
@@ -144,7 +184,40 @@ export default function Cast({ project }: { project: Project | null }) {
   }, [tab, data])
   const roleLabel = useMemo(() => CATS.find((c) => c.key === tab)?.label ?? '', [tab])
   const thumbOf = (e: Entity) => (fresh[e.id] ? fileUrl(fresh[e.id]) : e.thumbnail || '')
-  const visualDesc = (e: Entity | null) => (e?.description || '').split('【表演基线】')[0].trim()
+  const visualDesc = (e: Entity | null) => visibleDescription(e?.description)
+  const stateBase = (type: string, e: Entity) => {
+    const name = stateReferenceName(e.description)
+    return name ? (data[type] ?? []).find((candidate) => candidate.name === name) ?? null : null
+  }
+  const stateBaseFileId = (type: string, e: Entity) => {
+    const base = stateBase(type, e)
+    if (!base) return ''
+    return fresh[base.id] || angles[base.id]?.[0]?.file_id || ''
+  }
+  const strongReferenceAssets = (type: string, e: Entity) => {
+    if (type !== 'prop') return [] as { type: string; entity_id: string }[]
+    const relation = strongVisualReference(e.description)
+    if (!relation) return [] as { type: string; entity_id: string }[]
+    const refs = [
+      ...relation.characters.map((name) => ({ type: 'character', entity_id: (data.character || []).find((item) => item.name === name)?.id || '' })),
+      ...relation.scenes.map((name) => ({ type: 'scene', entity_id: (data.scene || []).find((item) => item.name === name)?.id || '' })),
+    ].filter((item) => item.entity_id)
+    return Array.from(new Map(refs.map((item) => [`${item.type}:${item.entity_id}`, item])).values())
+  }
+  const strongReferenceFileIds = async (type: string, e: Entity) => {
+    const refs = strongReferenceAssets(type, e)
+    const fileIds: string[] = []
+    for (const ref of refs) {
+      let fileId = fresh[ref.entity_id] || angles[ref.entity_id]?.[0]?.file_id || ''
+      if (!fileId) {
+        const images = await api.entityImages(ref.type, ref.entity_id)
+        fileId = images.find((image) => image.file_id)?.file_id || ''
+      }
+      if (!fileId) throw new Error('请先生成强关联的角色和场景参考图，再生成该道具。')
+      fileIds.push(fileId)
+    }
+    return Array.from(new Set(fileIds))
+  }
 
   const styleClause = () => {
     return project?.visual_style === '动漫'
@@ -152,7 +225,7 @@ export default function Cast({ project }: { project: Project | null }) {
       : `【风格】${DEFAULT_REALISTIC_STYLE}`
   }
   const DESIGN_PREFIX: Record<string, string> = {
-    character: '三视图画面：正面、侧面、背面横向并排，纯净中性背景，清晰展示外貌、发型、身形比例和服装细节。',
+    character: '角色设定三视图：正面、侧面、背面横向并排，纯净中性背景，清晰展示外貌、发型、身形比例和本造型状态的服装细节。',
     actor: '演员形象设定图，半身或全身，纯净中性背景，清晰展示五官与形象细节，设定集风格。主体：',
     scene: '空无一人的场景环境：',
     prop: '道具设计图，纯净中性背景，主体居中，完整清晰展示道具的整体形态、材质与特定细节(刻痕/锈迹/文字等)，产品/设定集视角。道具：',
@@ -160,24 +233,21 @@ export default function Cast({ project }: { project: Project | null }) {
   const designPrompt = (type: string, e: Entity) => {
     let body = visualDesc(e)
     if (!body) return ''
-    let costumeText = ''
-    if (type === 'character' && e.costume_id) {
-      const cos = (data['costume'] ?? []).find((c) => c.id === e.costume_id)
-      costumeText = cos?.description ? cleanCostumeText(visualDesc(cos)) : ''
-      body = cleanCharacterAppearance(body) || visualDesc(e)
-    }
     if (type === 'scene') {
       return [(DESIGN_PREFIX[type] || '') + body, styleClause()].filter(Boolean).join(' ')
     }
     if (type === 'character') {
       return [
         DESIGN_PREFIX[type],
-        `角色外貌：${body}`,
-        costumeText ? `服装：${costumeText}` : '',
+        `角色造型：${cleanCharacterLook(body) || body}`,
         styleClause(),
       ].filter(Boolean).join(' ')
     }
-    return [(DESIGN_PREFIX[type] || '') + body, styleClause()].filter(Boolean).join(' ')
+    const relation = type === 'prop' ? strongVisualReference(e.description) : null
+    const strongContent = relation?.content
+      ? `道具内部画面内容：${relation.content}；其中的人物和地点必须严格匹配所附参考图。`
+      : ''
+    return [(DESIGN_PREFIX[type] || '') + body, strongContent, styleClause()].filter(Boolean).join(' ')
   }
   const promptKey = (type: string, id: string) => (
     `${type}:${PROMPT_TEMPLATE_VERSION}:${id}`
@@ -220,13 +290,59 @@ export default function Cast({ project }: { project: Project | null }) {
     }
   }
 
+  async function deleteEntity(e: Entity) {
+    if (busy || batch) return
+    const dependents = (data[tab] ?? []).filter((item) => stateReferenceName(item.description) === e.name)
+    if (dependents.length) {
+      setErr(`「${e.name}」仍是 ${dependents.length} 个派生状态的基准，请先删除派生状态。`)
+      return
+    }
+    const typeLabel = tab === 'character' ? '角色及其造型图、镜头关联' : `${roleLabel}及其造型图`
+    if (!window.confirm(`删除「${e.name}」？这会同时删除${typeLabel}。`)) return
+    setBusy(e.id); setErr('')
+    try {
+      await api.deleteEntity(tab, e.id)
+      setData((current) => ({ ...current, [tab]: (current[tab] ?? []).filter((item) => item.id !== e.id) }))
+      setAngles((current) => {
+        const next = { ...current }
+        delete next[e.id]
+        return next
+      })
+      setFresh((current) => {
+        const next = { ...current }
+        delete next[e.id]
+        return next
+      })
+      setPromptEdits((current) => {
+        const next = { ...current }
+        delete next[promptKey(tab, e.id)]
+        return next
+      })
+      setErr(`已删除「${e.name}」。可回到「剧本」页再次「从剧本抽取设定」重新建立资产。`)
+    } catch (x: any) {
+      setErr(x?.message || '删除失败')
+      await loadAll()
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function gen(e: Entity) {
     if (busy) return
     setBusy(e.id); setErr(''); setStage('生成中…')
     try {
       const prompt = (tab === 'scene' ? ensureSceneGuard(promptFor(tab, e)) : promptFor(tab, e)).trim()
       if (!prompt) throw new Error('提示词为空，请先填写后再生成')
-      const fid = await api.generateEntityImage(tab, e.id, prompt, (p) => setStage(`生成中… ${p}%`), () => cancelledRef.current)
+      const base = stateBase(tab, e)
+      let referenceFileId = stateBaseFileId(tab, e)
+      if (base && !referenceFileId) {
+        const baseImages = await api.entityImages(tab, base.id)
+        referenceFileId = baseImages.find((image) => image.file_id)?.file_id || ''
+      }
+      if (base && !referenceFileId) throw new Error(`请先生成基准造型「${base.name}」；派生状态不能独立生成。`)
+      const strongReferenceFiles = await strongReferenceFileIds(tab, e)
+      const references = Array.from(new Set([referenceFileId, ...strongReferenceFiles].filter(Boolean)))
+      const fid = await api.generateEntityImage(tab, e.id, prompt, references, (p) => setStage(`生成中… ${p}%`), () => cancelledRef.current)
       setFresh((m) => ({ ...m, [e.id]: fid }))
       await loadEntityImages(tab, e.id)
     } catch (x: any) {
@@ -240,21 +356,49 @@ export default function Cast({ project }: { project: Project | null }) {
     setErr('')
     setStage('提交任务中…')
     try {
-      const queue: { type: string; id: string; name: string; image_id: number; prompt: string }[] = []
+      const queue: { type: string; id: string; name: string; image_id: number; prompt: string; reference_type?: string; reference_entity_id?: string; reference_assets?: { type: string; entity_id: string }[] }[] = []
       for (const c of CATS) {
         for (const e of data[c.key] ?? []) {
           if (cancelledRef.current) break
           const prompt = promptFor(c.key, e).trim()
           if (!prompt || thumbOf(e)) continue
           const image_id = await api.ensureImageSlot(c.key, e.id)
-          queue.push({ type: c.key, id: e.id, name: e.name, image_id, prompt })
+          const base = stateBase(c.key, e)
+          if (stateReferenceName(e.description) && !base) throw new Error(`找不到「${e.name}」的基准造型，无法提交派生状态。`)
+          queue.push({
+            type: c.key,
+            id: e.id,
+            name: e.name,
+            image_id,
+            prompt,
+            ...(base ? { reference_type: c.key, reference_entity_id: base.id } : {}),
+            ...(strongReferenceAssets(c.key, e).length ? { reference_assets: strongReferenceAssets(c.key, e) } : {}),
+          })
         }
       }
       if (!queue.length) {
         setErr('没有可提交的缺失造型：需要未生成图片，且提示词不为空。')
         return
       }
-      const created = await api.createAssetImageBatch(queue)
+      const orderedQueue: typeof queue = []
+      const remaining = new Map(queue.map((item) => [`${item.type}:${item.id}`, item]))
+      const appendWithBase = (item: (typeof queue)[number]) => {
+        const key = `${item.type}:${item.id}`
+        if (!remaining.has(key)) return
+        const baseKey = item.reference_entity_id ? `${item.reference_type}:${item.reference_entity_id}` : ''
+        if (baseKey) {
+          const base = remaining.get(baseKey)
+          if (base) appendWithBase(base)
+        }
+        for (const reference of item.reference_assets || []) {
+          const related = remaining.get(`${reference.type}:${reference.entity_id}`)
+          if (related) appendWithBase(related)
+        }
+        remaining.delete(key)
+        orderedQueue.push(item)
+      }
+      queue.forEach(appendWithBase)
+      const created = await api.createAssetImageBatch(orderedQueue)
       localStorage.setItem(`shotcat:assetImageBatch:${project.id}`, created.batch_id)
       setBatch({
         batch_id: created.batch_id,
@@ -264,6 +408,7 @@ export default function Cast({ project }: { project: Project | null }) {
         running: 0,
         succeeded: 0,
         failed: 0,
+        cancelled: 0,
         items: [],
       })
       const done = await api.pollAssetImageBatch(
@@ -273,7 +418,7 @@ export default function Cast({ project }: { project: Project | null }) {
       )
       if (done) {
         localStorage.removeItem(`shotcat:assetImageBatch:${project.id}`)
-        setErr(done.failed ? `批量生成完成，失败 ${done.failed} 项。` : '批量生成完成。')
+        setErr(done.status === 'cancelled' ? `已停止队列，保留已完成的 ${done.succeeded} 项。` : done.failed ? `批量生成完成，失败 ${done.failed} 项。` : '批量生成完成。')
         await loadAll()
       }
     } catch (x: any) {
@@ -281,6 +426,17 @@ export default function Cast({ project }: { project: Project | null }) {
     } finally {
       setStage('')
       setBatch(null)
+    }
+  }
+  async function stopMissingGeneration() {
+    if (!batch || !project) return
+    if (!window.confirm('停止当前批量生成？正在执行的图片任务也会收到取消请求，已经完成的图片会保留。')) return
+    try {
+      const stopped = await api.cancelAssetImageBatch(batch.batch_id)
+      setBatch(stopped)
+      setErr('已请求停止队列，正在执行的任务将尽快取消。')
+    } catch (x: any) {
+      setErr(x?.message || '停止队列失败')
     }
   }
   async function lockVisualDict() {
@@ -301,11 +457,12 @@ export default function Cast({ project }: { project: Project | null }) {
         <h1>造型</h1>
         <div className="spacer" />
         <button className="btn ghost" disabled={!!pipe || !!busy} onClick={lockVisualDict}>
-          {pipe === 'dict' ? '锁定中…（读全剧本）' : '① 锁定视觉词典'}
+          {pipe === 'dict' ? '锁定中…（读全剧本）' : '① 锁定角色状态与视觉词典'}
         </button>
         <button className="btn primary" disabled={!!batch || !!busy || !!pipe} onClick={genMissing}>
-          {batch ? `排队生成 ${batch.succeeded + batch.failed}/${batch.total}` : stage === '提交任务中…' ? '提交任务中…' : '② 提交全部缺失造型任务'}
+          {batch ? `排队生成 ${batch.succeeded + batch.failed + batch.cancelled}/${batch.total}` : stage === '提交任务中…' ? '提交任务中…' : '② 提交全部缺失造型任务'}
         </button>
+        {batch && <button className="btn ghost" onClick={stopMissingGeneration}>停止排队</button>}
       </div>
 
       <div className="tabs">
@@ -334,6 +491,8 @@ export default function Cast({ project }: { project: Project | null }) {
           const busyThis = busy === e.id
           const currentPrompt = promptFor(tab, e)
           const canGenerate = !!currentPrompt.trim()
+          const relationLabel = stateRelationLabel(e.description)
+          const strongRelation = tab === 'prop' ? strongVisualReference(e.description) : null
           return (
             <div className="cast-card" key={e.id}>
               <div className="cc-img">
@@ -362,12 +521,15 @@ export default function Cast({ project }: { project: Project | null }) {
                     onChange={(ev) => setEntityNameLocal(tab, e.id, ev.target.value)}
                     onBlur={(ev) => renameEntity(e, ev.target.value)}
                   />
-                  <span className="role">{roleLabel}</span>
+                  <span className="role">{relationLabel || roleLabel}</span>
                   <span className="id">{e.id.split('__').pop()}</span>
                 </div>
                 <div className="cc-desc">{visualDesc(e) || '（未锁定，先跑「① 锁定视觉词典」）'}</div>
+                {strongRelation && (
+                  <div className="cc-desc">强关联：{strongRelation.content || '道具内画面'}；角色 {strongRelation.characters.join('、') || '无'}；场景 {strongRelation.scenes.join('、') || '无'}</div>
+                )}
                 <div className="cc-prompt">
-                  <div className="prompt-label">生成提示词{tab === 'scene' ? ` · ${PROMPT_TEMPLATE_VERSION}` : ''}</div>
+                  <div className="prompt-label">{tab === 'character' ? '角色状态生成提示词' : '生成提示词'}{tab === 'scene' ? ` · ${PROMPT_TEMPLATE_VERSION}` : ''}</div>
                   <textarea
                     key={`${promptResetTick}:${tab}:${e.id}`}
                     className="prompt-edit"
@@ -379,6 +541,9 @@ export default function Cast({ project }: { project: Project | null }) {
                   <div className="prompt-actions">
                     <button className="btn ghost" disabled={busyThis || !!batch} onClick={() => setPromptFor(tab, e, designPrompt(tab, e))}>
                       按当前基调重置
+                    </button>
+                    <button className="btn ghost" disabled={busyThis || !!batch} onClick={() => deleteEntity(e)}>
+                      删除{tab === 'character' ? '角色' : roleLabel}
                     </button>
                   </div>
                 </div>

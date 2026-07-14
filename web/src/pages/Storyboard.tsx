@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, ANGLE_ZH, CAMERA_ZH, MOVE_ZH, type Chapter, type Entity, type FrameType, type Project, type Shot } from '../lib/api'
+import { api, ANGLE_ZH, CAMERA_ZH, MOVE_ZH, type AssetImageBatchStatus, type Chapter, type Entity, type FrameType, type Project, type Shot } from '../lib/api'
 
 // 对白判别：新数据 bridge 会给对白包「」；旧数据是 [动作, 对白] 双拍点，第二条即对白
 const isDialogue = (b: string, idx: number, total: number) => /[「『“"]/.test(b) || (total === 2 && idx === 1)
@@ -31,7 +31,7 @@ export default function Storyboard({ project }: { project: Project | null }) {
   const [sel, setSel] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [pipe, setPipe] = useState('') // shot-breakdown 进行中
-  const [batch, setBatch] = useState<{ cid: string; p: string } | null>(null) // 单集批量生成进度
+  const [batch, setBatch] = useState<{ cid: string; batchId: string; p: string } | null>(null) // 单集批量生成进度
   const [err, setErr] = useState('')
   const navigate = useNavigate()
 
@@ -39,6 +39,11 @@ export default function Storyboard({ project }: { project: Project | null }) {
   const cancelledRef = useRef(false) // 卸载后停止轮询
   // 挂载时重置：StrictMode(dev) 模拟卸载会把 ref 置 true 且跨挂载保留，不重置则轮询秒取消
   useEffect(() => { cancelledRef.current = false; return () => { cancelledRef.current = true } }, [])
+
+  const frameBatchStorageKey = (projectId: string) => `shotcat:frameImageBatch:${projectId}`
+  const frameBatchProgress = (status: AssetImageBatchStatus) => (
+    `${status.succeeded + status.failed + status.cancelled}/${status.total}`
+  )
 
   const loadAll = async () => {
     if (!project) return
@@ -101,19 +106,38 @@ export default function Storyboard({ project }: { project: Project | null }) {
       return !f?.key
     })
     if (!queue.length) return
-    setBatch({ cid, p: `0/${queue.length}` })
+    setBatch({ cid, batchId: '', p: `0/${queue.length}` })
+    let completed: AssetImageBatchStatus | null = null
     try {
       const items = await Promise.all(queue.map(async (s) => {
         const refs = await api.frameRefs(s.id, project?.id).catch(() => [])
         return { shot_id: s.id, name: s.title || `镜头 ${s.index}`, frame_type: 'key' as FrameType, images: refs }
       }))
       const created = await api.createFrameImageBatch(items, ratio)
-      await api.pollFrameImageBatch(created.batch_id, (s) => {
-        setBatch({ cid, p: `${s.succeeded + s.failed}/${s.total}` })
+      localStorage.setItem(frameBatchStorageKey(project!.id), JSON.stringify({ batchId: created.batch_id, cid }))
+      setBatch({ cid, batchId: created.batch_id, p: `0/${created.total}` })
+      completed = await api.pollFrameImageBatch(created.batch_id, (s) => {
+        setBatch({ cid, batchId: created.batch_id, p: frameBatchProgress(s) })
       }, () => cancelledRef.current)
+      if (completed?.status === 'cancelled') setErr(`已停止队列，保留已完成的 ${completed.succeeded} 张画面。`)
+    } catch (e: any) {
+      setErr(e?.message || '批量生成提交失败')
     } finally {
+      if (completed && project) localStorage.removeItem(frameBatchStorageKey(project.id))
       setBatch(null)
       if (!cancelledRef.current) await loadAll()
+    }
+  }
+
+  async function stopFrameGeneration() {
+    if (!batch?.batchId) return
+    if (!window.confirm('停止当前批量生成？正在执行的图片任务也会收到取消请求，已经完成的图片会保留。')) return
+    try {
+      const stopped = await api.cancelFrameImageBatch(batch.batchId)
+      setBatch((current) => current ? { ...current, p: frameBatchProgress(stopped) } : current)
+      setErr('已请求停止队列，正在执行的任务将尽快取消。')
+    } catch (e: any) {
+      setErr(e?.message || '停止队列失败')
     }
   }
 
@@ -122,6 +146,43 @@ export default function Storyboard({ project }: { project: Project | null }) {
     loadAll()
     api.entities('scene', project.id).then(setScenes).catch(() => {})
     api.entities('character', project.id).then(setChars).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id])
+
+  useEffect(() => {
+    if (!project || batch) return
+    const raw = localStorage.getItem(frameBatchStorageKey(project.id))
+    if (!raw) return
+    let saved: { batchId: string; cid: string }
+    try { saved = JSON.parse(raw) } catch { localStorage.removeItem(frameBatchStorageKey(project.id)); return }
+    if (!saved.batchId || !saved.cid) { localStorage.removeItem(frameBatchStorageKey(project.id)); return }
+    let stopped = false
+    ;(async () => {
+      try {
+        const first = await api.frameImageBatchStatus(saved.batchId)
+        if (stopped) return
+        if (first.status === 'succeeded' || first.status === 'failed' || first.status === 'cancelled') {
+          localStorage.removeItem(frameBatchStorageKey(project.id))
+          await loadAll()
+          return
+        }
+        setBatch({ cid: saved.cid, batchId: saved.batchId, p: frameBatchProgress(first) })
+        const completed = await api.pollFrameImageBatch(
+          saved.batchId,
+          (status) => !stopped && setBatch({ cid: saved.cid, batchId: saved.batchId, p: frameBatchProgress(status) }),
+          () => stopped || cancelledRef.current,
+        )
+        if (!stopped && completed) {
+          localStorage.removeItem(frameBatchStorageKey(project.id))
+          setErr(completed.status === 'cancelled' ? `已停止队列，保留已完成的 ${completed.succeeded} 张画面。` : completed.failed ? `批量生成完成，失败 ${completed.failed} 项。` : '批量生成完成。')
+          await loadAll()
+          setBatch(null)
+        }
+      } catch {
+        if (!stopped) localStorage.removeItem(frameBatchStorageKey(project.id))
+      }
+    })()
+    return () => { stopped = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id])
 
@@ -176,6 +237,9 @@ export default function Storyboard({ project }: { project: Project | null }) {
                   onClick={(e) => { e.stopPropagation(); genAllFrames(c.id) }}>
                   {batch?.cid === c.id ? `生成画面 ${batch.p}` : '批量生成本集画面'}
                 </button>
+                {batch?.cid === c.id && batch.batchId && (
+                  <button className="btn ghost" onClick={(e) => { e.stopPropagation(); stopFrameGeneration() }}>停止排队</button>
+                )}
               </div>
               {open[c.id] && (list.length === 0 ? (
                 <div className="center" style={{ height: 90 }}>本集尚无分镜 · 点「AI 拆镜头」按情节拆解</div>

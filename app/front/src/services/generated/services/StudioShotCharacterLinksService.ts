@@ -16,17 +16,23 @@ export class StudioShotCharacterLinksService {
      */
     public static listShotCharacterLinksApiV1StudioShotCharacterLinksGet({
         shotId,
+        chapterId,
     }: {
         /**
-         * 镜头 ID
+         * 镜头 ID（与 chapter_id 二选一）
          */
-        shotId: string,
+        shotId?: (string | null),
+        /**
+         * 章节 ID（批量查询整章镜头的角色关联）
+         */
+        chapterId?: (string | null),
     }): CancelablePromise<ApiResponse_list_ShotCharacterLinkRead__> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/v1/studio/shot-character-links',
             query: {
                 'shot_id': shotId,
+                'chapter_id': chapterId,
             },
             errors: {
                 422: `Validation Error`,

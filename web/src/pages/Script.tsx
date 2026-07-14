@@ -70,7 +70,7 @@ export default function Script({ project }: { project: Project | null }) {
     try {
       const j = await api.runPipeline('extract-setup', project.id)
       await api.pollPipeline(j)
-      setMsg('✓ 设定已抽取 → 去「设定」页「① 锁定视觉词典」细化并生成造型图，再「分镜」页「AI 拆镜头」')
+      setMsg('✓ 已按年龄、身份、妆发与服装拆出角色状态 → 去「设定」页锁定并生成对应造型图，再「分镜」页「AI 拆镜头」')
     } catch (e: any) { setMsg(e?.message || '抽取失败（pipeline 服务未起？）') } finally { setPipe('') }
   }
 

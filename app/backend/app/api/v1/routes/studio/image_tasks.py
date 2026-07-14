@@ -10,6 +10,7 @@ import asyncio
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,6 +24,11 @@ from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
 from app.core.task_manager.types import TaskStatus
 from app.dependencies import get_db
 from app.models.studio import (
+    ActorImage,
+    CharacterImage,
+    CostumeImage,
+    PropImage,
+    SceneImage,
     ShotDetail,
     ShotFrameType,
     ShotFrameImage,
@@ -60,7 +66,7 @@ from app.services.studio.generation.frame.derive_preview import (
     to_rendered_shot_frame_prompt_read as _to_rendered_shot_frame_prompt_read_service,
 )
 from app.services.studio.image_task_runner import create_image_task_and_link as _create_image_task_and_link_service
-from app.tasks.execute_task import enqueue_task_execution
+from app.tasks.execute_task import enqueue_task_execution, revoke_task_execution
 
 
 router = APIRouter()
@@ -112,11 +118,23 @@ class StudioImageTaskRequest(BaseModel):
 
 
 class AssetImageBatchItem(BaseModel):
+    """设定图批量队列项；派生状态在执行时读取已完成的基准图作为参考。"""
+
     type: Literal["character", "actor", "scene", "prop", "costume"]
     id: str
     name: str = ""
     image_id: int
     prompt: str = Field(..., min_length=1)
+    reference_type: Literal["character", "actor", "scene", "prop", "costume"] | None = None
+    reference_entity_id: str | None = None
+    reference_assets: list["AssetImageReference"] = Field(default_factory=list)
+
+
+class AssetImageReference(BaseModel):
+    """批量生成时动态读取的实体参考图，用于照片/屏幕等强关联道具。"""
+
+    type: Literal["character", "actor", "scene", "prop", "costume"]
+    entity_id: str
 
 
 class AssetImageBatchRequest(BaseModel):
@@ -137,6 +155,7 @@ class AssetImageBatchStatus(BaseModel):
     running: int
     succeeded: int
     failed: int
+    cancelled: int
     current: str = ""
     current_task_id: str | None = None
     error: str = ""
@@ -170,6 +189,7 @@ class FrameImageBatchStatus(BaseModel):
     running: int
     succeeded: int
     failed: int
+    cancelled: int
     current: str = ""
     current_task_id: str | None = None
     error: str = ""
@@ -393,17 +413,22 @@ def _batch_snapshot(batch_id: str) -> dict | None:
         }
 
 
+def _update_batch_counts(batch: dict) -> None:
+    items = batch.get("items", [])
+    batch["queued"] = sum(1 for item in items if item.get("status") == "queued")
+    batch["running"] = sum(1 for item in items if item.get("status") == "running")
+    batch["succeeded"] = sum(1 for item in items if item.get("status") == "succeeded")
+    batch["failed"] = sum(1 for item in items if item.get("status") == "failed")
+    batch["cancelled"] = sum(1 for item in items if item.get("status") == "cancelled")
+
+
 def _batch_update(batch_id: str, **patch: object) -> None:
     with _BATCH_LOCK:
         batch = _ASSET_IMAGE_BATCHES.get(batch_id)
         if batch is None:
             return
         batch.update(patch)
-        items = batch.get("items", [])
-        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
-        batch["running"] = sum(1 for x in items if x.get("status") == "running")
-        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
-        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+        _update_batch_counts(batch)
 
 
 def _batch_item_update(batch_id: str, index: int, **patch: object) -> None:
@@ -415,10 +440,7 @@ def _batch_item_update(batch_id: str, index: int, **patch: object) -> None:
         if index < 0 or index >= len(items):
             return
         items[index].update(patch)
-        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
-        batch["running"] = sum(1 for x in items if x.get("status") == "running")
-        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
-        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+        _update_batch_counts(batch)
 
 
 def _frame_batch_snapshot(batch_id: str) -> dict | None:
@@ -438,11 +460,7 @@ def _frame_batch_update(batch_id: str, **patch: object) -> None:
         if batch is None:
             return
         batch.update(patch)
-        items = batch.get("items", [])
-        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
-        batch["running"] = sum(1 for x in items if x.get("status") == "running")
-        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
-        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+        _update_batch_counts(batch)
 
 
 def _frame_batch_item_update(batch_id: str, index: int, **patch: object) -> None:
@@ -454,10 +472,45 @@ def _frame_batch_item_update(batch_id: str, index: int, **patch: object) -> None
         if index < 0 or index >= len(items):
             return
         items[index].update(patch)
-        batch["queued"] = sum(1 for x in items if x.get("status") == "queued")
-        batch["running"] = sum(1 for x in items if x.get("status") == "running")
-        batch["succeeded"] = sum(1 for x in items if x.get("status") == "succeeded")
-        batch["failed"] = sum(1 for x in items if x.get("status") == "failed")
+        _update_batch_counts(batch)
+
+
+def _batch_cancel_requested(batches: dict[str, dict], batch_id: str) -> bool:
+    with _BATCH_LOCK:
+        batch = batches.get(batch_id)
+        return bool(batch and batch.get("cancel_requested"))
+
+
+def _request_batch_cancel(batches: dict[str, dict], batch_id: str) -> str | None:
+    """停止后不再启动队列项目，并返回当前已提交任务供调用方撤销。"""
+    with _BATCH_LOCK:
+        batch = batches.get(batch_id)
+        if batch is None:
+            return None
+        if batch.get("status") in {"succeeded", "failed", "cancelled"}:
+            return str(batch.get("current_task_id") or "")
+        batch["cancel_requested"] = True
+        for item in batch.get("items", []):
+            if item.get("status") == "queued":
+                item.update(status="cancelled", error="队列已停止")
+        _update_batch_counts(batch)
+        batch["status"] = "cancelling" if batch["running"] else "cancelled"
+        batch["error"] = "已请求停止队列"
+        return str(batch.get("current_task_id") or "")
+
+
+async def _cancel_generation_task(task_id: str) -> None:
+    if not task_id:
+        return
+    async with async_session_maker() as db:
+        store = SqlAlchemyTaskStore(db)
+        record = await store.request_cancel(task_id, "批量队列已停止")
+        if record is None:
+            return
+        await db.commit()
+        if record.status != TaskStatus.cancelled and revoke_task_execution(task_id):
+            await store.mark_cancelled(task_id)
+            await db.commit()
 
 
 async def _wait_generation_task(task_id: str, *, timeout_s: float = 900.0) -> TaskStatus:
@@ -475,18 +528,68 @@ async def _wait_generation_task(task_id: str, *, timeout_s: float = 900.0) -> Ta
         return last_status
 
 
+_IMAGE_REFERENCE_SPECS = {
+    "character": (CharacterImage, "character_id"),
+    "actor": (ActorImage, "actor_id"),
+    "scene": (SceneImage, "scene_id"),
+    "prop": (PropImage, "prop_id"),
+    "costume": (CostumeImage, "costume_id"),
+}
+
+
+async def _load_entity_reference_file_ids(
+    db: AsyncSession,
+    references: list[AssetImageReference],
+) -> list[str]:
+    """Dynamically resolve entity images for a strong visual prop relationship."""
+    file_ids: list[str] = []
+    for reference in references:
+        image_model, parent_field = _IMAGE_REFERENCE_SPECS[reference.type]
+        statement = (
+            select(image_model.file_id)
+            .where(getattr(image_model, parent_field) == reference.entity_id)
+            .where(image_model.file_id.is_not(None))
+            .order_by(image_model.id.asc())
+            .limit(1)
+        )
+        file_id = (await db.execute(statement)).scalar_one_or_none()
+        if not file_id:
+            raise ValueError(f"强关联参考图尚未生成：{reference.type}/{reference.entity_id}")
+        file_ids.append(str(file_id))
+    return list(dict.fromkeys(file_ids))
+
+
+async def _load_state_reference_file_ids(db: AsyncSession, item: AssetImageBatchItem) -> list[str]:
+    """在派生状态真正执行时读取基准图，确保队列前一项生成完成后才能被引用。"""
+    if not item.reference_type or not item.reference_entity_id:
+        return []
+    image_model, parent_field = _IMAGE_REFERENCE_SPECS[item.reference_type]
+    statement = (
+        select(image_model.file_id)
+        .where(getattr(image_model, parent_field) == item.reference_entity_id)
+        .where(image_model.file_id.is_not(None))
+        .order_by(image_model.id.asc())
+    )
+    return [str(file_id) for file_id in (await db.execute(statement)).scalars().all() if file_id]
+
+
 async def _create_asset_batch_item_task(item: AssetImageBatchItem, *, model_id: str | None) -> str:
     prompt = _scene_empty_prompt(item.prompt) if item.type == "scene" else item.prompt.strip()
     if not prompt:
         raise ValueError("prompt is required")
     async with async_session_maker() as db:
+        state_reference_file_ids = await _load_state_reference_file_ids(db, item)
+        if item.reference_entity_id and not state_reference_file_ids:
+            raise ValueError("基准造型图尚未生成，派生状态不会独立生成")
+        strong_reference_file_ids = await _load_entity_reference_file_ids(db, item.reference_assets)
+        reference_file_ids = list(dict.fromkeys([*state_reference_file_ids, *strong_reference_file_ids]))
         if item.type == "character":
             submission = await _build_character_image_submission_payload_service(
                 db,
                 character_id=item.id,
                 image_id=item.image_id,
                 prompt=prompt,
-                images=[],
+                images=reference_file_ids,
             )
         elif item.type == "actor":
             submission = await _build_actor_image_submission_payload_service(
@@ -494,7 +597,7 @@ async def _create_asset_batch_item_task(item: AssetImageBatchItem, *, model_id: 
                 actor_id=item.id,
                 image_id=item.image_id,
                 prompt=prompt,
-                images=[],
+                images=reference_file_ids,
             )
         else:
             submission = await _build_asset_image_submission_payload_service(
@@ -503,22 +606,28 @@ async def _create_asset_batch_item_task(item: AssetImageBatchItem, *, model_id: 
                 asset_id=item.id,
                 image_id=item.image_id,
                 prompt=prompt,
-                images=[],
+                images=reference_file_ids,
             )
+        ref_images = await _resolve_reference_image_refs_by_file_ids_service(db, file_ids=submission.images)
         return await _create_image_task_and_link_service(
             db=db,
             model_id=model_id,
             relation_type=submission.relation_type,
             relation_entity_id=submission.relation_entity_id,
             prompt=submission.prompt,
-            images=None,
+            images=ref_images if ref_images else None,
             target_ratio="16:9",
         )
 
 
 async def _run_asset_image_batch(batch_id: str, items: list[AssetImageBatchItem], *, model_id: str | None) -> None:
+    if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id):
+        _batch_update(batch_id, status="cancelled", current="", current_task_id=None)
+        return
     _batch_update(batch_id, status="running", current="")
     for index, item in enumerate(items):
+        if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id):
+            break
         label = item.name or item.id
         _batch_update(batch_id, current=label)
         _batch_item_update(batch_id, index, status="running", error="")
@@ -526,13 +635,25 @@ async def _run_asset_image_batch(batch_id: str, items: list[AssetImageBatchItem]
             task_id = await _create_asset_batch_item_task(item, model_id=model_id)
             _batch_update(batch_id, current_task_id=task_id)
             _batch_item_update(batch_id, index, task_id=task_id)
+            if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id):
+                await _cancel_generation_task(task_id)
             task_status = await _wait_generation_task(task_id)
             if task_status == TaskStatus.succeeded:
                 _batch_item_update(batch_id, index, status="succeeded")
+            elif task_status == TaskStatus.cancelled and _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id):
+                _batch_item_update(batch_id, index, status="cancelled", error="队列已停止")
             else:
                 _batch_item_update(batch_id, index, status="failed", error=f"任务{task_status.value}")
         except Exception as exc:  # noqa: BLE001
-            _batch_item_update(batch_id, index, status="failed", error=str(exc))
+            _batch_item_update(
+                batch_id,
+                index,
+                status="cancelled" if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id) else "failed",
+                error="队列已停止" if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id) else str(exc),
+            )
+    if _batch_cancel_requested(_ASSET_IMAGE_BATCHES, batch_id):
+        _batch_update(batch_id, status="cancelled", current="", current_task_id=None)
+        return
     snapshot = _batch_snapshot(batch_id) or {}
     failed = int(snapshot.get("failed") or 0)
     _batch_update(
@@ -557,11 +678,14 @@ async def _create_frame_batch_item_task(
     model_id: str | None,
     target_ratio: ImageTargetRatio,
     resolution_profile: ImageResolutionProfile | None,
+    on_task_created: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     prompt_task_id = await _create_shot_frame_prompt_task_internal(
         shot_id=item.shot_id,
         frame_type=item.frame_type,
     )
+    if on_task_created:
+        await on_task_created(prompt_task_id)
     prompt_status = await _wait_generation_task(prompt_task_id, timeout_s=300.0)
     if prompt_status != TaskStatus.succeeded:
         raise RuntimeError(f"prompt task {prompt_status.value}")
@@ -570,7 +694,7 @@ async def _create_frame_batch_item_task(
     if not prompt:
         raise RuntimeError("prompt task returned empty prompt")
     async with async_session_maker() as db:
-        return await _create_shot_frame_image_task_internal(
+        image_task_id = await _create_shot_frame_image_task_internal(
             db=db,
             shot_id=item.shot_id,
             frame_type=item.frame_type,
@@ -580,6 +704,9 @@ async def _create_frame_batch_item_task(
             target_ratio=target_ratio,
             resolution_profile=resolution_profile,
         )
+    if on_task_created:
+        await on_task_created(image_task_id)
+    return image_task_id
 
 
 async def _run_frame_image_batch(
@@ -590,27 +717,51 @@ async def _run_frame_image_batch(
     target_ratio: ImageTargetRatio,
     resolution_profile: ImageResolutionProfile | None,
 ) -> None:
+    if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+        _frame_batch_update(batch_id, status="cancelled", current="", current_task_id=None)
+        return
     _frame_batch_update(batch_id, status="running", current="")
     for index, item in enumerate(items):
+        if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+            break
         label = item.name or item.shot_id
         _frame_batch_update(batch_id, current=label)
         _frame_batch_item_update(batch_id, index, status="running", error="")
         try:
+            async def register_current_task(task_id: str) -> None:
+                _frame_batch_update(batch_id, current_task_id=task_id)
+                _frame_batch_item_update(batch_id, index, task_id=task_id)
+                if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+                    await _cancel_generation_task(task_id)
+
             task_id = await _create_frame_batch_item_task(
                 item,
                 model_id=model_id,
                 target_ratio=target_ratio,
                 resolution_profile=resolution_profile,
+                on_task_created=register_current_task,
             )
             _frame_batch_update(batch_id, current_task_id=task_id)
             _frame_batch_item_update(batch_id, index, task_id=task_id)
+            if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+                await _cancel_generation_task(task_id)
             task_status = await _wait_generation_task(task_id)
             if task_status == TaskStatus.succeeded:
                 _frame_batch_item_update(batch_id, index, status="succeeded")
+            elif task_status == TaskStatus.cancelled and _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+                _frame_batch_item_update(batch_id, index, status="cancelled", error="队列已停止")
             else:
                 _frame_batch_item_update(batch_id, index, status="failed", error=f"任务{task_status.value}")
         except Exception as exc:  # noqa: BLE001
-            _frame_batch_item_update(batch_id, index, status="failed", error=str(exc))
+            _frame_batch_item_update(
+                batch_id,
+                index,
+                status="cancelled" if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id) else "failed",
+                error="队列已停止" if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id) else str(exc),
+            )
+    if _batch_cancel_requested(_FRAME_IMAGE_BATCHES, batch_id):
+        _frame_batch_update(batch_id, status="cancelled", current="", current_task_id=None)
+        return
     snapshot = _frame_batch_snapshot(batch_id) or {}
     failed = int(snapshot.get("failed") or 0)
     _frame_batch_update(
@@ -666,14 +817,17 @@ async def create_asset_image_batch(
             "running": 0,
             "succeeded": 0,
             "failed": 0,
+            "cancelled": 0,
             "current": "",
             "current_task_id": None,
             "error": "",
+            "cancel_requested": False,
             "items": [
                 {
                     "type": item.type,
                     "id": item.id,
                     "name": item.name,
+                    "reference_entity_id": item.reference_entity_id,
                     "status": "queued",
                     "task_id": None,
                     "error": "",
@@ -692,6 +846,23 @@ async def create_asset_image_batch(
     summary="查询设定页造型图批量生成进度",
 )
 async def get_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchStatus]:
+    snapshot = _batch_snapshot(batch_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    return success_response(AssetImageBatchStatus.model_validate(snapshot))
+
+
+@router.post(
+    "/asset-batches/{batch_id}/cancel",
+    response_model=ApiResponse[AssetImageBatchStatus],
+    status_code=status.HTTP_200_OK,
+    summary="停止设定页造型图批量生成",
+)
+async def cancel_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchStatus]:
+    task_id = _request_batch_cancel(_ASSET_IMAGE_BATCHES, batch_id)
+    if task_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    await _cancel_generation_task(task_id)
     snapshot = _batch_snapshot(batch_id)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
@@ -720,9 +891,11 @@ async def create_frame_image_batch(
             "running": 0,
             "succeeded": 0,
             "failed": 0,
+            "cancelled": 0,
             "current": "",
             "current_task_id": None,
             "error": "",
+            "cancel_requested": False,
             "items": [
                 {
                     "shot_id": item.shot_id,
@@ -752,6 +925,23 @@ async def create_frame_image_batch(
     summary="查询镜头画面批量生成进度",
 )
 async def get_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchStatus]:
+    snapshot = _frame_batch_snapshot(batch_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    return success_response(FrameImageBatchStatus.model_validate(snapshot))
+
+
+@router.post(
+    "/frame-batches/{batch_id}/cancel",
+    response_model=ApiResponse[FrameImageBatchStatus],
+    status_code=status.HTTP_200_OK,
+    summary="停止镜头画面批量生成",
+)
+async def cancel_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchStatus]:
+    task_id = _request_batch_cancel(_FRAME_IMAGE_BATCHES, batch_id)
+    if task_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    await _cancel_generation_task(task_id)
     snapshot = _frame_batch_snapshot(batch_id)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
