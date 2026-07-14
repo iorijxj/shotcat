@@ -13,6 +13,7 @@ from app.schemas.studio.entity_existence import (
     EntityNameExistenceCheckRequest,
     EntityNameExistenceCheckResponse,
 )
+from app.schemas.studio.entity_usage import EntityDeleteResult, EntityUsageSummaryRead
 from app.services.studio import StudioEntitiesService
 
 router = APIRouter()
@@ -78,6 +79,22 @@ async def create_entity(
     return created_response(payload)
 
 
+@router.get(
+    "/{entity_type}/usage-summary",
+    response_model=ApiResponse[list[EntityUsageSummaryRead]],
+    summary="造型资产在镜头画面中的使用汇总",
+)
+async def list_entity_usage_summary(
+    entity_type: str,
+    project_id: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[list[EntityUsageSummaryRead]]:
+    """供造型页一次加载资产被哪些镜头画面引用。"""
+    service = StudioEntitiesService(db)
+    data = await service.list_entity_usage_summaries(entity_type=entity_type, project_id=project_id)
+    return success_response([EntityUsageSummaryRead.model_validate(item) for item in data])
+
+
 @router.get("/{entity_type}/{entity_id}", response_model=ApiResponse[dict[str, Any]], summary="统一获取实体")
 async def get_entity(entity_type: str, entity_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse[dict[str, Any]]:
     service = StudioEntitiesService(db)
@@ -97,11 +114,12 @@ async def update_entity(
     return success_response(payload)
 
 
-@router.delete("/{entity_type}/{entity_id}", response_model=ApiResponse[None], summary="统一删除实体")
-async def delete_entity(entity_type: str, entity_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse[None]:
+@router.delete("/{entity_type}/{entity_id}", response_model=ApiResponse[EntityDeleteResult], summary="统一删除实体")
+async def delete_entity(entity_type: str, entity_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse[EntityDeleteResult]:
+    """删除资产；若为派生状态，则把镜头引用自动回退到基准资产。"""
     service = StudioEntitiesService(db)
-    await service.delete_entity(entity_type=entity_type, entity_id=entity_id)
-    return empty_response()
+    data = await service.delete_entity(entity_type=entity_type, entity_id=entity_id)
+    return success_response(EntityDeleteResult.model_validate(data))
 
 
 @router.get(

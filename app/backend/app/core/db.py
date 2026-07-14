@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     AsyncEngine,
@@ -14,7 +15,11 @@ from app.config import settings
 
 
 def _build_engine() -> AsyncEngine:
-    return create_async_engine(
+    connect_args: dict[str, Any] = {}
+    if settings.database_url.startswith("sqlite"):
+        # SQLite 默认几乎不等待锁；批量图片任务并发写入时会把普通读取也打成 500。
+        connect_args = {"timeout": 30}
+    db_engine = create_async_engine(
         settings.database_url,
         echo=settings.debug,
         future=True,
@@ -23,7 +28,25 @@ def _build_engine() -> AsyncEngine:
         # recycle 提前主动换连接兜底
         pool_pre_ping=True,
         pool_recycle=3600,
+        connect_args=connect_args,
     )
+    if settings.database_url.startswith("sqlite"):
+        _configure_sqlite_connection(db_engine)
+    return db_engine
+
+
+def _configure_sqlite_connection(db_engine: AsyncEngine) -> None:
+    """为每条 SQLite 连接启用 WAL 和锁等待，允许读请求与短写事务并存。"""
+
+    @event.listens_for(db_engine.sync_engine, "connect")
+    def set_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout = 30000")
+            cursor.execute("PRAGMA journal_mode = WAL")
+            cursor.execute("PRAGMA synchronous = NORMAL")
+        finally:
+            cursor.close()
 
 
 def _build_session_maker(bind_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

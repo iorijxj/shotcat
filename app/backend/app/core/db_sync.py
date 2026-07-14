@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from typing import Any
+
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,12 +24,32 @@ def _to_sync_database_url(url: str) -> str:
 
 
 def _build_sync_engine() -> Engine:
-    return create_engine(
-        _to_sync_database_url(settings.database_url),
+    database_url = _to_sync_database_url(settings.database_url)
+    connect_args: dict[str, Any] = {"timeout": 30} if database_url.startswith("sqlite") else {}
+    db_engine = create_engine(
+        database_url,
         echo=settings.debug,
         future=True,
         pool_pre_ping=True,
+        connect_args=connect_args,
     )
+    if database_url.startswith("sqlite"):
+        _configure_sqlite_connection(db_engine)
+    return db_engine
+
+
+def _configure_sqlite_connection(db_engine: Engine) -> None:
+    """让同步后台任务使用与 API 相同的 SQLite 并发保护参数。"""
+
+    @event.listens_for(db_engine, "connect")
+    def set_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout = 30000")
+            cursor.execute("PRAGMA journal_mode = WAL")
+            cursor.execute("PRAGMA synchronous = NORMAL")
+        finally:
+            cursor.close()
 
 
 engine_sync = _build_sync_engine()

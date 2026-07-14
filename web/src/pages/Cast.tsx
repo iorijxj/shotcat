@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, fileUrl, type AssetImageBatchStatus, type Entity, type Project } from '../lib/api'
+import { api, fileUrl, type AssetImageBatchStatus, type Entity, type EntityUsageShot, type Project } from '../lib/api'
 import Lightbox from '../Lightbox'
 
 const CATS = [
@@ -75,6 +75,7 @@ function visibleDescription(description?: string) {
 
 export default function Cast({ project }: { project: Project | null }) {
   const [data, setData] = useState<Record<string, Entity[]>>({})
+  const [usageByEntity, setUsageByEntity] = useState<Record<string, EntityUsageShot[]>>({})
   const [tab, setTab] = useState('character')
   const [fresh, setFresh] = useState<Record<string, string>>({}) // 刚生成的 file_id
   const [busy, setBusy] = useState<string>('') // 正在生成的实体 id
@@ -92,14 +93,20 @@ export default function Cast({ project }: { project: Project | null }) {
   useEffect(() => { cancelledRef.current = false; return () => { cancelledRef.current = true } }, [])
 
   const loadAll = () => {
-    if (!project) return
-    Promise.all(DATA_CATS.map((c) => api.entities(c.key, project.id).catch(() => [] as Entity[]))).then((lists) => {
+    if (!project) return Promise.resolve()
+    return Promise.all([
+      Promise.all(DATA_CATS.map((c) => api.entities(c.key, project.id).catch(() => [] as Entity[]))),
+      Promise.all(CATS.map((c) => api.entityUsageSummary(c.key, project.id).catch(() => []))),
+    ]).then(([lists, usageLists]) => {
       const map: Record<string, Entity[]> = {}
       DATA_CATS.forEach((c, i) => (map[c.key] = lists[i]))
       setData(map)
+      const usageMap: Record<string, EntityUsageShot[]> = {}
+      usageLists.flat().forEach((summary) => { usageMap[summary.entity_id] = summary.shots })
+      setUsageByEntity(usageMap)
     })
   }
-  useEffect(loadAll, [project])
+  useEffect(() => { void loadAll() }, [project])
   useEffect(() => {
     if (!project) return
     const versionKey = `shotcat:promptTemplateVersion:${project.id}`
@@ -297,11 +304,19 @@ export default function Cast({ project }: { project: Project | null }) {
       setErr(`「${e.name}」仍是 ${dependents.length} 个派生状态的基准，请先删除派生状态。`)
       return
     }
+    const baseName = stateReferenceName(e.description)
+    const base = stateBase(tab, e)
+    if (baseName && !base) {
+      setErr(`找不到派生状态「${e.name}」的基准造型「${baseName}」，为避免镜头失去参考，不能删除。`)
+      return
+    }
+    const usage = usageByEntity[e.id] ?? []
     const typeLabel = tab === 'character' ? '角色及其造型图、镜头关联' : `${roleLabel}及其造型图`
-    if (!window.confirm(`删除「${e.name}」？这会同时删除${typeLabel}。`)) return
+    const fallbackNotice = base ? `已使用它的 ${usage.length} 个镜头会自动改用基准造型「${base.name}」。` : `这会同时删除${typeLabel}。`
+    if (!window.confirm(`删除「${e.name}」？${fallbackNotice}`)) return
     setBusy(e.id); setErr('')
     try {
-      await api.deleteEntity(tab, e.id)
+      const result = await api.deleteEntity(tab, e.id)
       setData((current) => ({ ...current, [tab]: (current[tab] ?? []).filter((item) => item.id !== e.id) }))
       setAngles((current) => {
         const next = { ...current }
@@ -318,7 +333,10 @@ export default function Cast({ project }: { project: Project | null }) {
         delete next[promptKey(tab, e.id)]
         return next
       })
-      setErr(`已删除「${e.name}」。可回到「剧本」页再次「从剧本抽取设定」重新建立资产。`)
+      await loadAll()
+      setErr(result.fallback_entity_name
+        ? `已删除「${e.name}」，${result.reassigned_shot_count} 个镜头已改用基准造型「${result.fallback_entity_name}」。`
+        : `已删除「${e.name}」。可回到「剧本」页再次「从剧本抽取设定」重新建立资产。`)
     } catch (x: any) {
       setErr(x?.message || '删除失败')
       await loadAll()
@@ -492,7 +510,9 @@ export default function Cast({ project }: { project: Project | null }) {
           const currentPrompt = promptFor(tab, e)
           const canGenerate = !!currentPrompt.trim()
           const relationLabel = stateRelationLabel(e.description)
+          const isDerivedState = !!stateReferenceName(e.description)
           const strongRelation = tab === 'prop' ? strongVisualReference(e.description) : null
+          const usage = usageByEntity[e.id] ?? []
           return (
             <div className="cast-card" key={e.id}>
               <div className="cc-img">
@@ -528,6 +548,11 @@ export default function Cast({ project }: { project: Project | null }) {
                 {strongRelation && (
                   <div className="cc-desc">强关联：{strongRelation.content || '道具内画面'}；角色 {strongRelation.characters.join('、') || '无'}；场景 {strongRelation.scenes.join('、') || '无'}</div>
                 )}
+                <div className="cc-desc">
+                  {usage.length
+                    ? `画面使用（${usage.length}）：${usage.map((shot) => `第${shot.shot_index}镜 ${shot.title}`).join('、')}`
+                    : '当前未被镜头画面使用'}
+                </div>
                 <div className="cc-prompt">
                   <div className="prompt-label">{tab === 'character' ? '角色状态生成提示词' : '生成提示词'}{tab === 'scene' ? ` · ${PROMPT_TEMPLATE_VERSION}` : ''}</div>
                   <textarea
@@ -543,7 +568,7 @@ export default function Cast({ project }: { project: Project | null }) {
                       按当前基调重置
                     </button>
                     <button className="btn ghost" disabled={busyThis || !!batch} onClick={() => deleteEntity(e)}>
-                      删除{tab === 'character' ? '角色' : roleLabel}
+                      删除{isDerivedState ? '派生状态' : tab === 'character' ? '角色' : roleLabel}
                     </button>
                   </div>
                 </div>

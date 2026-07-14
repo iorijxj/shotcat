@@ -43,6 +43,14 @@ export const MOVE_ZH: Record<string, string> = {
   CRANE: '摇臂', HANDHELD: '手持', STEADICAM: '稳定器', ZOOM_IN: '变焦推', ZOOM_OUT: '变焦拉',
 }
 export interface Entity { id: string; name: string; description?: string; thumbnail?: string; costume_id?: string }
+export interface EntityUsageShot { shot_id: string; chapter_id: string; shot_index: number; title: string }
+export interface EntityUsageSummary { entity_id: string; shots: EntityUsageShot[] }
+export interface EntityDeleteResult {
+  deleted_entity_id: string
+  fallback_entity_id: string | null
+  fallback_entity_name: string | null
+  reassigned_shot_count: number
+}
 export interface FrameImage { id: number; shot_detail_id: string; frame_type: 'first' | 'key' | 'last'; file_id: string | null }
 export interface TaskStatus { task_id: string; status: string; progress: number }
 export interface AssetImageBatchStatus {
@@ -138,14 +146,18 @@ export const api = {
     }).then((r) => { if (!r.ok) throw new Error(`保存失败 ${r.status}`) }),
   entities: (type: string, projectId: string) =>
     get<Paged<Entity>>(`/studio/entities/${type}?project_id=${projectId}&page_size=100`).then((d) => d.items),
+  entityUsageSummary: (type: string, projectId: string) =>
+    get<EntityUsageSummary[]>(`/studio/entities/${type}/usage-summary?project_id=${projectId}`),
   updateEntity: (type: string, id: string, patch: Partial<Entity>) =>
     fetch(`${BASE}/studio/entities/${type}/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
     }).then((r) => { if (!r.ok) throw new Error(`更新失败 ${r.status}`) }),
-  deleteEntity: (type: string, id: string) =>
-    fetch(`${BASE}/studio/entities/${type}/${id}`, { method: 'DELETE' }).then((r) => {
-      if (!r.ok) throw new Error(`删除失败 ${r.status}`)
-    }),
+  deleteEntity: async (type: string, id: string) => {
+    const r = await fetch(`${BASE}/studio/entities/${type}/${id}`, { method: 'DELETE' })
+    const j = await r.json().catch(() => null)
+    if (!r.ok) throw new Error(j?.message || `删除失败 ${r.status}`)
+    return (j?.data ?? j) as EntityDeleteResult
+  },
 
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>

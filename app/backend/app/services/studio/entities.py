@@ -8,6 +8,7 @@ from app.services.studio.entity_crud import (
     create_entity as create_entity_service,
     delete_entity as delete_entity_service,
     get_entity as get_entity_service,
+    list_entity_usage_summaries,
     list_entities_paginated,
     update_entity as update_entity_service,
 )
@@ -92,8 +93,17 @@ class StudioEntitiesService:
             body=body,
         )
 
-    async def delete_entity(self, *, entity_type: str, entity_id: str) -> None:
-        await delete_entity_service(self._db, entity_type=entity_type, entity_id=entity_id)
+    async def list_entity_usage_summaries(self, *, entity_type: str, project_id: str) -> list[dict[str, object]]:
+        """返回项目内每张造型卡被哪些镜头画面引用。"""
+        return await list_entity_usage_summaries(
+            self._db,
+            entity_type=entity_type,
+            project_id=project_id,
+        )
+
+    async def delete_entity(self, *, entity_type: str, entity_id: str) -> dict[str, object]:
+        """删除资产并返回派生状态自动回退到基准资产的结果。"""
+        return await delete_entity_service(self._db, entity_type=entity_type, entity_id=entity_id)
 
     async def list_entity_images(
         self,

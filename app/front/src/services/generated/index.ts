@@ -16,6 +16,7 @@ export type { ApiResponse_CharacterPortraitAnalysisResult_ } from './models/ApiR
 export type { ApiResponse_CostumeInfoAnalysisResult_ } from './models/ApiResponse_CostumeInfoAnalysisResult_';
 export type { ApiResponse_dict_ } from './models/ApiResponse_dict_';
 export type { ApiResponse_dict_str__Any__ } from './models/ApiResponse_dict_str__Any__';
+export type { ApiResponse_EntityDeleteResult_ } from './models/ApiResponse_EntityDeleteResult_';
 export type { ApiResponse_EntityMergeResult_ } from './models/ApiResponse_EntityMergeResult_';
 export type { ApiResponse_EntityNameExistenceCheckResponse_ } from './models/ApiResponse_EntityNameExistenceCheckResponse_';
 export type { ApiResponse_FileDetailRead_ } from './models/ApiResponse_FileDetailRead_';
@@ -24,6 +25,7 @@ export type { ApiResponse_FrameImageBatchCreated_ } from './models/ApiResponse_F
 export type { ApiResponse_FrameImageBatchStatus_ } from './models/ApiResponse_FrameImageBatchStatus_';
 export type { ApiResponse_GenerationTaskLinkRead_ } from './models/ApiResponse_GenerationTaskLinkRead_';
 export type { ApiResponse_ImageGenerationOptionsRead_ } from './models/ApiResponse_ImageGenerationOptionsRead_';
+export type { ApiResponse_list_EntityUsageSummaryRead__ } from './models/ApiResponse_list_EntityUsageSummaryRead__';
 export type { ApiResponse_list_PromptCategoryOptionRead__ } from './models/ApiResponse_list_PromptCategoryOptionRead__';
 export type { ApiResponse_list_ProviderSupportedRead__ } from './models/ApiResponse_list_ProviderSupportedRead__';
 export type { ApiResponse_list_ShotCharacterLinkRead__ } from './models/ApiResponse_list_ShotCharacterLinkRead__';
@@ -104,6 +106,7 @@ export type { CostumeInfoAnalysisResult } from './models/CostumeInfoAnalysisResu
 export type { CostumeTimeline } from './models/CostumeTimeline';
 export type { CostumeTimelineEntry } from './models/CostumeTimelineEntry';
 export type { DialogueLineMode } from './models/DialogueLineMode';
+export type { EntityDeleteResult } from './models/EntityDeleteResult';
 export type { EntityEntry } from './models/EntityEntry';
 export type { EntityLibrary } from './models/EntityLibrary';
 export type { EntityMergeResult } from './models/EntityMergeResult';
@@ -111,6 +114,8 @@ export type { EntityMergerRequest } from './models/EntityMergerRequest';
 export type { EntityNameExistenceCheckRequest } from './models/EntityNameExistenceCheckRequest';
 export type { EntityNameExistenceCheckResponse } from './models/EntityNameExistenceCheckResponse';
 export type { EntityNameExistenceItem } from './models/EntityNameExistenceItem';
+export type { EntityUsageShotRead } from './models/EntityUsageShotRead';
+export type { EntityUsageSummaryRead } from './models/EntityUsageSummaryRead';
 export type { EntityVariant } from './models/EntityVariant';
 export type { EvidenceSpan } from './models/EvidenceSpan';
 export type { FileDetailRead } from './models/FileDetailRead';

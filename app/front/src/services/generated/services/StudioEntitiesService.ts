@@ -3,7 +3,9 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { ApiResponse_dict_str__Any__ } from '../models/ApiResponse_dict_str__Any__';
+import type { ApiResponse_EntityDeleteResult_ } from '../models/ApiResponse_EntityDeleteResult_';
 import type { ApiResponse_EntityNameExistenceCheckResponse_ } from '../models/ApiResponse_EntityNameExistenceCheckResponse_';
+import type { ApiResponse_list_EntityUsageSummaryRead__ } from '../models/ApiResponse_list_EntityUsageSummaryRead__';
 import type { ApiResponse_NoneType_ } from '../models/ApiResponse_NoneType_';
 import type { ApiResponse_PaginatedData_dict_str__Any___ } from '../models/ApiResponse_PaginatedData_dict_str__Any___';
 import type { EntityNameExistenceCheckRequest } from '../models/EntityNameExistenceCheckRequest';
@@ -116,6 +118,33 @@ export class StudioEntitiesService {
         });
     }
     /**
+     * 造型资产在镜头画面中的使用汇总
+     * 供造型页一次加载资产被哪些镜头画面引用。
+     * @returns ApiResponse_list_EntityUsageSummaryRead__ Successful Response
+     * @throws ApiError
+     */
+    public static listEntityUsageSummaryApiV1StudioEntitiesEntityTypeUsageSummaryGet({
+        entityType,
+        projectId,
+    }: {
+        entityType: string,
+        projectId: string,
+    }): CancelablePromise<ApiResponse_list_EntityUsageSummaryRead__> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/studio/entities/{entity_type}/usage-summary',
+            path: {
+                'entity_type': entityType,
+            },
+            query: {
+                'project_id': projectId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 统一获取实体
      * @returns ApiResponse_dict_str__Any__ Successful Response
      * @throws ApiError
@@ -169,7 +198,8 @@ export class StudioEntitiesService {
     }
     /**
      * 统一删除实体
-     * @returns ApiResponse_NoneType_ Successful Response
+     * 删除资产；若为派生状态，则把镜头引用自动回退到基准资产。
+     * @returns ApiResponse_EntityDeleteResult_ Successful Response
      * @throws ApiError
      */
     public static deleteEntityApiV1StudioEntitiesEntityTypeEntityIdDelete({
@@ -178,7 +208,7 @@ export class StudioEntitiesService {
     }: {
         entityType: string,
         entityId: string,
-    }): CancelablePromise<ApiResponse_NoneType_> {
+    }): CancelablePromise<ApiResponse_EntityDeleteResult_> {
         return __request(OpenAPI, {
             method: 'DELETE',
             url: '/api/v1/studio/entities/{entity_type}/{entity_id}',

@@ -9,7 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.models.studio import Actor, Chapter, Costume, Project, Shot, ShotCharacterLink
+from app.models.studio import (
+    Actor,
+    Chapter,
+    Costume,
+    Project,
+    Shot,
+    ShotCharacterLink,
+    ShotDetail,
+    ShotDialogLine,
+    ShotExtractedCandidate,
+)
 from app.schemas.studio.cast import ShotCharacterLinkCreate
 from app.services.common import entity_already_exists, entity_not_found
 from app.services.studio.entity_image_names import sync_entity_image_file_names
@@ -19,6 +29,7 @@ from app.services.studio.shot_character_links import upsert as upsert_shot_chara
 from app.utils.project_links import upsert_project_link
 
 ENTITY_ORDER_FIELDS = {"name", "style", "visual_style", "created_at", "updated_at"}
+STATE_BASE_PREFIX = "【状态关系】派生自："
 
 
 def _asset_read_payload(obj: Any, thumbnail: str) -> dict[str, Any]:
@@ -33,6 +44,234 @@ def _asset_read_payload(obj: Any, thumbnail: str) -> dict[str, Any]:
         "visual_style": obj.visual_style,
         "thumbnail": thumbnail,
     }
+
+
+def _repair_legacy_description_line(value: str) -> str:
+    """恢复少量旧项目中被按 Latin-1 误存的一至两层 UTF-8 文本。"""
+    repaired = value or ""
+    if not any(marker in repaired for marker in ("Ã", "Â", "â", "ã")):
+        return repaired
+    for _ in range(2):
+        try:
+            decoded = repaired.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            break
+        if not decoded or "\ufffd" in decoded or decoded == repaired:
+            break
+        repaired = decoded
+        if any("\u4e00" <= char <= "\u9fff" or char in "【】" for char in repaired):
+            break
+    return repaired
+
+
+def _derived_base_name(description: str | None) -> str:
+    """从状态说明中读取派生资产的基准名称，兼容旧项目乱码。"""
+    for raw_line in (description or "").splitlines():
+        line = _repair_legacy_description_line(raw_line).strip()
+        if line.startswith(STATE_BASE_PREFIX):
+            return line.removeprefix(STATE_BASE_PREFIX).strip()
+    return ""
+
+
+async def _replace_project_asset_links(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str,
+    fallback_entity_id: str,
+) -> set[str]:
+    """把场景/道具等项目关联改为基准资产，并合并同一镜头内的重复关联。"""
+    link_spec = LINK_MODEL_BY_ENTITY.get(entity_type)
+    if link_spec is None:
+        return set()
+    link_model, asset_field = link_spec
+    rows = list(
+        (await db.execute(select(link_model).where(getattr(link_model, asset_field) == entity_id))).scalars().all()
+    )
+    affected_shot_ids: set[str] = set()
+    for row in rows:
+        if row.shot_id:
+            affected_shot_ids.add(str(row.shot_id))
+        scope_conditions = [
+            getattr(link_model, field_name) == getattr(row, field_name)
+            for field_name in ("project_id", "chapter_id", "shot_id")
+        ]
+        existing = (
+            await db.execute(
+                select(link_model).where(
+                    getattr(link_model, asset_field) == fallback_entity_id,
+                    *scope_conditions,
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            await db.delete(row)
+        else:
+            setattr(row, asset_field, fallback_entity_id)
+    return affected_shot_ids
+
+
+async def _replace_character_links(
+    db: AsyncSession,
+    *,
+    entity_id: str,
+    fallback_entity_id: str,
+) -> set[str]:
+    """把镜头角色、对白与候选引用改为基准角色，保留镜头内排序。"""
+    rows = list(
+        (await db.execute(select(ShotCharacterLink).where(ShotCharacterLink.character_id == entity_id))).scalars().all()
+    )
+    affected_shot_ids: set[str] = set()
+    for row in rows:
+        affected_shot_ids.add(str(row.shot_id))
+        existing = (
+            await db.execute(
+                select(ShotCharacterLink).where(
+                    ShotCharacterLink.shot_id == row.shot_id,
+                    ShotCharacterLink.character_id == fallback_entity_id,
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            await db.delete(row)
+        else:
+            row.character_id = fallback_entity_id
+
+    dialogue_rows = list(
+        (
+            await db.execute(
+                select(ShotDialogLine).where(
+                    (ShotDialogLine.speaker_character_id == entity_id)
+                    | (ShotDialogLine.target_character_id == entity_id)
+                )
+            )
+        ).scalars().all()
+    )
+    for row in dialogue_rows:
+        if row.speaker_character_id == entity_id:
+            row.speaker_character_id = fallback_entity_id
+        if row.target_character_id == entity_id:
+            row.target_character_id = fallback_entity_id
+    return affected_shot_ids
+
+
+async def _replace_extracted_candidate_links(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str,
+    fallback_entity_id: str,
+) -> None:
+    """同步镜头提取候选的已确认实体，避免编辑页回到已删除状态。"""
+    rows = list(
+        (
+            await db.execute(
+                select(ShotExtractedCandidate).where(
+                    ShotExtractedCandidate.candidate_type == entity_type,
+                    ShotExtractedCandidate.linked_entity_id == entity_id,
+                )
+            )
+        ).scalars().all()
+    )
+    for row in rows:
+        row.linked_entity_id = fallback_entity_id
+
+
+async def list_entity_usage_summaries(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    project_id: str,
+) -> list[dict[str, Any]]:
+    """汇总项目内每张造型卡被哪些镜头使用，供造型页一次性标注。"""
+    entity_type_norm = normalize_entity_type(entity_type)
+    spec = entity_spec(entity_type_norm)
+    entity_ids = list(
+        (await db.execute(select(spec.model.id).where(spec.model.project_id == project_id))).scalars().all()
+    )
+    usage_by_entity: dict[str, dict[str, dict[str, Any]]] = {str(entity_id): {} for entity_id in entity_ids}
+    if not entity_ids:
+        return []
+
+    def add_usage(entity_id: str, shot_id: str, chapter_id: str, shot_index: int, title: str) -> None:
+        if entity_id not in usage_by_entity:
+            return
+        usage_by_entity[entity_id][shot_id] = {
+            "shot_id": shot_id,
+            "chapter_id": chapter_id,
+            "shot_index": shot_index,
+            "title": title,
+        }
+
+    if entity_type_norm == "character":
+        rows = (
+            await db.execute(
+                select(
+                    ShotCharacterLink.character_id,
+                    Shot.id,
+                    Shot.chapter_id,
+                    Shot.index,
+                    Shot.title,
+                )
+                .join(Shot, Shot.id == ShotCharacterLink.shot_id)
+                .join(Chapter, Chapter.id == Shot.chapter_id)
+                .where(
+                    ShotCharacterLink.character_id.in_(entity_ids),
+                    Chapter.project_id == project_id,
+                )
+            )
+        ).all()
+        for entity_id, shot_id, chapter_id, shot_index, title in rows:
+            add_usage(str(entity_id), str(shot_id), str(chapter_id), int(shot_index), str(title))
+    elif entity_type_norm in LINK_MODEL_BY_ENTITY:
+        link_model, asset_field = LINK_MODEL_BY_ENTITY[entity_type_norm]
+        rows = (
+            await db.execute(
+                select(
+                    getattr(link_model, asset_field),
+                    Shot.id,
+                    Shot.chapter_id,
+                    Shot.index,
+                    Shot.title,
+                )
+                .join(Shot, Shot.id == link_model.shot_id)
+                .where(
+                    getattr(link_model, asset_field).in_(entity_ids),
+                    link_model.project_id == project_id,
+                )
+            )
+        ).all()
+        for entity_id, shot_id, chapter_id, shot_index, title in rows:
+            add_usage(str(entity_id), str(shot_id), str(chapter_id), int(shot_index), str(title))
+
+    if entity_type_norm == "scene":
+        detail_rows = (
+            await db.execute(
+                select(
+                    ShotDetail.scene_id,
+                    Shot.id,
+                    Shot.chapter_id,
+                    Shot.index,
+                    Shot.title,
+                )
+                .join(Shot, Shot.id == ShotDetail.id)
+                .join(Chapter, Chapter.id == Shot.chapter_id)
+                .where(
+                    ShotDetail.scene_id.in_(entity_ids),
+                    Chapter.project_id == project_id,
+                )
+            )
+        ).all()
+        for entity_id, shot_id, chapter_id, shot_index, title in detail_rows:
+            add_usage(str(entity_id), str(shot_id), str(chapter_id), int(shot_index), str(title))
+
+    return [
+        {
+            "entity_id": entity_id,
+            "shots": sorted(shots.values(), key=lambda shot: (shot["chapter_id"], shot["shot_index"], shot["shot_id"])),
+        }
+        for entity_id, shots in usage_by_entity.items()
+    ]
 
 
 async def list_entities_paginated(
@@ -260,10 +499,67 @@ async def delete_entity(
     *,
     entity_type: str,
     entity_id: str,
-) -> None:
-    spec = entity_spec(entity_type)
+) -> dict[str, Any]:
+    """删除资产；派生状态先把所有镜头引用安全回退到对应基准资产。"""
+    entity_type_norm = normalize_entity_type(entity_type)
+    spec = entity_spec(entity_type_norm)
     obj = await db.get(spec.model, entity_id)
     if obj is None:
-        return
+        return {
+            "deleted_entity_id": entity_id,
+            "fallback_entity_id": None,
+            "fallback_entity_name": None,
+            "reassigned_shot_count": 0,
+        }
+
+    fallback_entity_id: str | None = None
+    fallback_entity_name: str | None = None
+    affected_shot_ids: set[str] = set()
+    fallback_name = _derived_base_name(getattr(obj, "description", ""))
+    if fallback_name:
+        fallback = (
+            await db.execute(
+                select(spec.model).where(
+                    spec.model.project_id == obj.project_id,
+                    spec.model.name == fallback_name,
+                )
+            )
+        ).scalars().first()
+        if fallback is None or fallback.id == entity_id:
+            raise HTTPException(status_code=409, detail="派生状态的基准造型不存在，无法安全删除")
+        fallback_entity_id = str(fallback.id)
+        fallback_entity_name = str(fallback.name)
+        if entity_type_norm == "character":
+            affected_shot_ids = await _replace_character_links(
+                db,
+                entity_id=entity_id,
+                fallback_entity_id=fallback_entity_id,
+            )
+        else:
+            affected_shot_ids = await _replace_project_asset_links(
+                db,
+                entity_type=entity_type_norm,
+                entity_id=entity_id,
+                fallback_entity_id=fallback_entity_id,
+            )
+            if entity_type_norm == "scene":
+                details = list(
+                    (await db.execute(select(ShotDetail).where(ShotDetail.scene_id == entity_id))).scalars().all()
+                )
+                for detail in details:
+                    detail.scene_id = fallback_entity_id
+                    affected_shot_ids.add(str(detail.id))
+        await _replace_extracted_candidate_links(
+            db,
+            entity_type=entity_type_norm,
+            entity_id=entity_id,
+            fallback_entity_id=fallback_entity_id,
+        )
     await db.delete(obj)
     await db.flush()
+    return {
+        "deleted_entity_id": entity_id,
+        "fallback_entity_id": fallback_entity_id,
+        "fallback_entity_name": fallback_entity_name,
+        "reassigned_shot_count": len(affected_shot_ids),
+    }

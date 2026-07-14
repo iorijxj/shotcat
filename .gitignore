@@ -15,6 +15,7 @@ __pycache__/
 node_modules/
 *.tsbuildinfo
 bridge/.glm_key
+bridge/.openai_key
 bridge/visual-dict-*.json
 
 # app/ 后端内核（已并入本仓库，作为项目自有代码维护）
@@ -30,3 +31,11 @@ app/**/.env
 # 生成产物
 bridge/units-*.json
 bridge/shots-*.json
+
+# 本地运行数据与日志
+app/backend/jellyfish.db*
+app/backend/local-storage/
+jellyfish.db*
+bridge/*.log
+web/*.log
+.tmp-openapi.json
