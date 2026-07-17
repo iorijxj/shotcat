@@ -45,11 +45,20 @@ if exist "%COMPOSE_ENV%" (
 )
 
 echo [stop] removing LAN port forwarding created by server.bat ^(needs Administrator^)...
+if exist "%COMPOSE_ENV%" (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("%COMPOSE_ENV%") do (
+        set "key=%%A"
+        if not "!key:~0,1!"=="#" if not "%%A"=="" set "%%A=%%B"
+    )
+)
+if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
+if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
+
 net session >nul 2>&1
 if errorlevel 1 (
-    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports 7788/8000. Re-run stop.bat as Administrator if server.bat was used.
+    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports %SERVER_FRONT_PORT%/%SERVER_BACKEND_PORT%. Re-run stop.bat as Administrator if server.bat was used.
 ) else (
-    for %%P in (7788 8000) do (
+    for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
         netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
         netsh advfirewall firewall delete rule name="shotcat-server-%%P" >nul 2>&1
     )

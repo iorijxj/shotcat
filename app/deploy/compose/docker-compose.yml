@@ -107,7 +107,7 @@ services:
       # 可选
       OPENAI_API_KEY: ${OPENAI_API_KEY-}
     ports:
-      - "8000:8000"
+      - "${SERVER_BACKEND_PORT:-18000}:8000"
     depends_on:
       mysql:
         condition: service_healthy
@@ -156,7 +156,7 @@ services:
     environment:
       BACKEND_URL: ${BACKEND_URL}
     ports:
-      - "7788:80"
+      - "${SERVER_FRONT_PORT:-18080}:80"
     depends_on:
       - backend
 

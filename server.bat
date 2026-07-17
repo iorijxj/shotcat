@@ -31,6 +31,16 @@ if not exist "%COMPOSE_ENV%" (
     goto :end
 )
 
+REM Read the actual published ports from .env. These are deliberately
+REM different from test.bat/run.bat's native dev ports (8000/7788) so the
+REM two modes can never fight over the same port.
+for /f "usebackq tokens=1,2 delims==" %%A in ("%COMPOSE_ENV%") do (
+    set "key=%%A"
+    if not "!key:~0,1!"=="#" if not "%%A"=="" set "%%A=%%B"
+)
+if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
+if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
+
 REM Docker Desktop is not allowed here; the stack runs via Docker Engine
 REM inside WSL2 (set up by install.bat).
 for /f "delims=" %%W in ('wsl -- wslpath -a "%ROOT:~0,-1%"') do set "WSL_ROOT=%%W"
@@ -52,7 +62,7 @@ if not defined WSL_IP (
     goto skip_portproxy
 )
 
-for %%P in (7788 8000) do (
+for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
     netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
     netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=%%P connectaddress=!WSL_IP! connectport=%%P >nul
     netsh advfirewall firewall show rule name="shotcat-server-%%P" >nul 2>&1
@@ -63,8 +73,8 @@ for %%P in (7788 8000) do (
 :skip_portproxy
 
 echo [server] === full stack is up ===
-echo [server] frontend ^(built^): http://localhost:7788
-echo [server] backend docs: http://localhost:8000/docs
+echo [server] frontend ^(built^): http://localhost:%SERVER_FRONT_PORT%
+echo [server] backend docs: http://localhost:%SERVER_BACKEND_PORT%/docs
 echo [server] other machines on the same network can reach it via this host's LAN IP on the same ports.
 
 :end
