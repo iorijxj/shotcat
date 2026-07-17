@@ -1,6 +1,7 @@
 services:
   mysql:
     image: mysql:9.0
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -18,6 +19,7 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
     healthcheck:
@@ -28,6 +30,7 @@ services:
 
   rustfs:
     image: rustfs/rustfs:latest
+    restart: unless-stopped
     command: ["/data"]
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
@@ -87,6 +90,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
     environment:
       DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_HOST: redis
@@ -125,6 +129,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
     environment:
       DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_HOST: redis
@@ -156,6 +161,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/front.Dockerfile
+    restart: unless-stopped
     environment:
       BACKEND_URL: ${BACKEND_URL}
     ports:

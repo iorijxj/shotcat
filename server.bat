@@ -72,7 +72,30 @@ for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
     )
 )
 
-echo [server] === full stack is up ===
+REM Self-check: print the actual portproxy table and probe each port over
+REM loopback so a broken link is visible immediately instead of being
+REM discovered later from another machine. Any HTTP status (even 404)
+REM counts as OK -- only 000 means the connection itself failed.
+echo [server] active portproxy rules:
+netsh interface portproxy show v4tov4
+echo [server] self-check ^(loopback -^> WSL2 container^)...
+set "SELFCHECK_FAIL="
+for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
+    set "HTTP_CODE=000"
+    for /f %%C in ('curl -s -o NUL -m 5 -w "%%{http_code}" http://127.0.0.1:%%P/ 2^>nul') do set "HTTP_CODE=%%C"
+    if "!HTTP_CODE!"=="000" (
+        echo [server][FAIL] http://127.0.0.1:%%P/ unreachable -- loopback path to the container is broken. Check: wsl -- docker ps
+        set "SELFCHECK_FAIL=1"
+    ) else (
+        echo [server][OK] http://127.0.0.1:%%P/ responded ^(HTTP !HTTP_CODE!^)
+    )
+)
+
+if defined SELFCHECK_FAIL (
+    echo [server] === stack started but the self-check FAILED, LAN access will not work until this is fixed ===
+    goto :end
+)
+echo [server] === full stack is up, self-check passed ===
 echo [server] frontend ^(built^): http://localhost:%SERVER_FRONT_PORT%
 echo [server] backend docs: http://localhost:%SERVER_BACKEND_PORT%/docs
 echo [server] other machines on the same network can reach it via this host's LAN IP on the same ports.
