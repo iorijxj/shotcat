@@ -25,6 +25,12 @@ COPY backend/ ./
 # Now install the project (and ensure entrypoints/imports work)
 RUN uv sync --frozen --no-dev
 
+# The image already ships a complete runtime environment. Without this,
+# `uv run` re-syncs against the lockfile at container start and tries to
+# download the missing dev deps (pytest etc.) from PyPI -- containers must
+# start fully offline.
+ENV UV_NO_SYNC=1
+
 EXPOSE 8000
 
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

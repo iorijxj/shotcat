@@ -3,3 +3,4 @@ front/dist
 backend/.venv
 **/__pycache__
 **/*.pyc
+**/.pytest_cache
