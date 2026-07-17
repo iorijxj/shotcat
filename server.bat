@@ -32,6 +32,19 @@ if not exist "%COMPOSE_ENV%" (
     goto :end
 )
 
+REM WSL must never idle-shutdown on a serving machine: the VM takes every
+REM container with it and comes back on a different NAT IP, so the stack
+REM silently dies minutes after startup.
+findstr /i "vmIdleTimeout" "%USERPROFILE%\.wslconfig" >nul 2>&1
+if errorlevel 1 (
+    echo [server][WARN] %USERPROFILE%\.wslconfig is missing "vmIdleTimeout=-1" --
+    echo [server][WARN] WSL will auto-shutdown when idle and kill all containers.
+    echo [server][WARN] Make sure that file contains these two lines:
+    echo [server][WARN]     [wsl2]
+    echo [server][WARN]     vmIdleTimeout=-1
+    echo [server][WARN] then run "wsl --shutdown" once and re-run server.bat.
+)
+
 REM Read the actual published ports from .env. These are deliberately
 REM different from test.bat/run.bat's native dev ports (8000/7788) so the
 REM two modes can never fight over the same port.
