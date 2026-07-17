@@ -40,6 +40,12 @@ for /f "usebackq tokens=1,2 delims==" %%A in ("%COMPOSE_ENV%") do (
 )
 if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
 if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
+REM Internal ports: what the containers publish on 127.0.0.1. These MUST
+REM differ from the public ports above -- WSL2 mirrored networking tracks
+REM bound ports machine-wide by port number, and reusing the same number
+REM for the portproxy listener makes LAN-facing connections get refused.
+if not defined SERVER_BACKEND_INTERNAL_PORT set "SERVER_BACKEND_INTERNAL_PORT=28000"
+if not defined SERVER_FRONT_INTERNAL_PORT set "SERVER_FRONT_INTERNAL_PORT=28080"
 
 REM Docker Desktop is not allowed here; the stack runs via Docker Engine
 REM inside WSL2 (set up by install.bat).
@@ -63,12 +69,16 @@ REM intermittently. Instead a native Windows portproxy listener terminates
 REM LAN connections and relays them over loopback into WSL2, which is the
 REM one path proven stable on this setup.
 echo [server] opening LAN access ^(native portproxy -^> loopback -^> WSL2^)...
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
-    netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
-    netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=%%P connectaddress=127.0.0.1 connectport=%%P >nul
-    netsh advfirewall firewall show rule name="shotcat-server-%%P" >nul 2>&1
-    if errorlevel 1 (
-        netsh advfirewall firewall add rule name="shotcat-server-%%P" dir=in action=allow protocol=TCP localport=%%P >nul
+REM portproxy listeners live in the IP Helper service; make sure it runs.
+sc query iphlpsvc | findstr /i "RUNNING" >nul || net start iphlpsvc >nul 2>&1
+for %%Z in ("!SERVER_FRONT_PORT!=!SERVER_FRONT_INTERNAL_PORT!" "!SERVER_BACKEND_PORT!=!SERVER_BACKEND_INTERNAL_PORT!") do (
+    for /f "tokens=1,2 delims==" %%A in ("%%~Z") do (
+        netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%A >nul 2>&1
+        netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=%%A connectaddress=127.0.0.1 connectport=%%B >nul
+        netsh advfirewall firewall show rule name="shotcat-server-%%A" >nul 2>&1
+        if errorlevel 1 (
+            netsh advfirewall firewall add rule name="shotcat-server-%%A" dir=in action=allow protocol=TCP localport=%%A >nul
+        )
     )
 )
 
@@ -78,8 +88,10 @@ REM discovered later from another machine. Any HTTP status (even 404)
 REM counts as OK -- only 000 means the connection itself failed.
 echo [server] active portproxy rules:
 netsh interface portproxy show v4tov4
-echo [server] self-check ^(loopback -^> WSL2 container^)...
 set "SELFCHECK_FAIL="
+echo [server] self-check 1/2: containers on internal loopback ports...
+for %%P in (!SERVER_FRONT_INTERNAL_PORT! !SERVER_BACKEND_INTERNAL_PORT!) do call :probe_port %%P
+echo [server] self-check 2/2: full chain through the portproxy listener...
 for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do call :probe_port %%P
 
 if defined SELFCHECK_FAIL (
