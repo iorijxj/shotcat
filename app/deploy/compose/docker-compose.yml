@@ -111,11 +111,11 @@ services:
       # 可选
       OPENAI_API_KEY: ${OPENAI_API_KEY-}
     ports:
-      # 只绑 loopback 的"内部端口"：LAN 流量由宿主机原生监听（server.bat 的
-      # portproxy，监听对外端口 SERVER_BACKEND_PORT）终结后经 127.0.0.1 转入。
-      # 内部端口必须与对外端口错开——mirrored 模式会按端口号在整机层面记账，
-      # 容器和 portproxy 共用同一端口号时 LAN IP 上的入站会被拒连。
-      - "127.0.0.1:${SERVER_BACKEND_INTERNAL_PORT:-28000}:8000"
+      # 内部端口：LAN 流量由宿主机 portproxy（监听对外端口 SERVER_BACKEND_PORT）
+      # 终结后转发进来，转发目标由 server.bat 按 WSL 网络模式自动探测
+      # （NAT 模式 -> WSL 内网 IP，mirrored 模式 -> 127.0.0.1）。内部端口必须
+      # 与对外端口错开，避免 mirrored 模式按端口号整机记账造成的冲突。
+      - "${SERVER_BACKEND_INTERNAL_PORT:-28000}:8000"
     depends_on:
       mysql:
         condition: service_healthy
@@ -166,8 +166,8 @@ services:
     environment:
       BACKEND_URL: ${BACKEND_URL}
     ports:
-      # 同 backend：只绑 loopback 内部端口，LAN 访问走 server.bat 的 portproxy。
-      - "127.0.0.1:${SERVER_FRONT_INTERNAL_PORT:-28080}:80"
+      # 同 backend：发布到内部端口，LAN 访问走 server.bat 的 portproxy。
+      - "${SERVER_FRONT_INTERNAL_PORT:-28080}:80"
     depends_on:
       - backend
 
