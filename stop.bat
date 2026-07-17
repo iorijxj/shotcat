@@ -23,6 +23,18 @@ for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "s
     taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 
+REM uv run uvicorn --reload / vite dev can leave an orphaned child process
+REM behind even after the parent window is killed (the reload supervisor
+REM forks a separate worker). Belt-and-suspenders: also reclaim the actual
+REM ports directly so a leftover process can't keep them occupied.
+echo [stop] force-killing any leftover process still bound to 8000/7788...
+for %%P in (8000 7788) do (
+    for /f "tokens=5" %%I in ('netstat -ano ^| findstr /r /c:":%%P .*LISTENING"') do (
+        echo [stop] killing leftover PID %%I on port %%P
+        taskkill /F /PID %%I >nul 2>&1
+    )
+)
+
 echo [stop] stopping docker compose containers ^(mysql/redis/rustfs/backend/celery-worker/front^)...
 if exist "%COMPOSE_ENV%" (
     for /f "delims=" %%W in ('wsl -- wslpath -a "%ROOT:~0,-1%"') do set "WSL_ROOT=%%W"
