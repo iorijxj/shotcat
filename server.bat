@@ -80,16 +80,7 @@ echo [server] active portproxy rules:
 netsh interface portproxy show v4tov4
 echo [server] self-check ^(loopback -^> WSL2 container^)...
 set "SELFCHECK_FAIL="
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
-    set "HTTP_CODE=000"
-    for /f %%C in ('curl -s -o NUL -m 5 -w "%%{http_code}" http://127.0.0.1:%%P/ 2^>nul') do set "HTTP_CODE=%%C"
-    if "!HTTP_CODE!"=="000" (
-        echo [server][FAIL] http://127.0.0.1:%%P/ unreachable -- loopback path to the container is broken. Check: wsl -- docker ps
-        set "SELFCHECK_FAIL=1"
-    ) else (
-        echo [server][OK] http://127.0.0.1:%%P/ responded ^(HTTP !HTTP_CODE!^)
-    )
-)
+for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do call :probe_port %%P
 
 if defined SELFCHECK_FAIL (
     echo [server] === stack started but the self-check FAILED, LAN access will not work until this is fixed ===
@@ -103,3 +94,28 @@ echo [server] other machines on the same network can reach it via this host's LA
 :end
 endlocal
 pause
+goto :eof
+
+REM Probe one port over loopback, retrying for up to ~30s: nginx answers
+REM the moment its container starts, but the backend needs several seconds
+REM to connect to MySQL and begin listening, so a single immediate probe
+REM produces false FAILs. Any HTTP status (even 404) counts as reachable.
+:probe_port
+set "HTTP_CODE=000"
+set /a PROBE_TRIES=0
+:probe_retry
+for /f %%C in ('curl -s -o NUL -m 5 -w "%%{http_code}" http://127.0.0.1:%~1/ 2^>nul') do set "HTTP_CODE=%%C"
+if not "%HTTP_CODE%"=="000" (
+    echo [server][OK] http://127.0.0.1:%~1/ responded ^(HTTP %HTTP_CODE%^)
+    exit /b 0
+)
+set /a PROBE_TRIES+=1
+if %PROBE_TRIES%==1 echo [server] waiting for http://127.0.0.1:%~1/ to come up...
+if %PROBE_TRIES% LSS 15 (
+    timeout /t 2 /nobreak >nul
+    goto probe_retry
+)
+echo [server][FAIL] http://127.0.0.1:%~1/ still unreachable after ~30s. Container status:
+wsl -- docker ps --format "table {{.Names}}\t{{.Status}}"
+set "SELFCHECK_FAIL=1"
+exit /b 1
