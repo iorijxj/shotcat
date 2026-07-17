@@ -18,8 +18,8 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 echo [server] === shotcat full stack startup ^(docker compose, headless^) ===
 
 REM Making the stack reachable from other machines on the LAN requires
-REM netsh portproxy + firewall rules (WSL2's NAT only forwards localhost
-REM traffic on its own, unlike Docker Desktop). That needs admin rights.
+REM netsh portproxy + firewall rules (containers publish on 127.0.0.1
+REM only; a native listener fronts the LAN). That needs admin rights.
 net session >nul 2>&1
 if errorlevel 1 (
     echo [server] this script needs Administrator rights to open the LAN-facing ports. Right-click server.bat and choose "Run as administrator".
@@ -55,22 +55,22 @@ if errorlevel 1 (
     goto :end
 )
 
-echo [server] opening LAN access to the WSL2-hosted stack...
-for /f "tokens=1" %%I in ('wsl -- hostname -I') do set "WSL_IP=%%I"
-if not defined WSL_IP (
-    echo [server] could not determine the WSL IP, skipping LAN port forwarding. The stack is still reachable from this machine at localhost.
-    goto skip_portproxy
-)
-
+REM LAN access design: the containers publish their ports on 127.0.0.1
+REM only (see docker-compose.yml), so the WSL2 mirrored network never
+REM faces the LAN interface directly -- that direct path fights with
+REM VPN/Tun virtual adapters (e.g. v2rayN Tun mode) and drops connections
+REM intermittently. Instead a native Windows portproxy listener terminates
+REM LAN connections and relays them over loopback into WSL2, which is the
+REM one path proven stable on this setup.
+echo [server] opening LAN access ^(native portproxy -^> loopback -^> WSL2^)...
 for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
     netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
-    netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=%%P connectaddress=!WSL_IP! connectport=%%P >nul
+    netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=%%P connectaddress=127.0.0.1 connectport=%%P >nul
     netsh advfirewall firewall show rule name="shotcat-server-%%P" >nul 2>&1
     if errorlevel 1 (
         netsh advfirewall firewall add rule name="shotcat-server-%%P" dir=in action=allow protocol=TCP localport=%%P >nul
     )
 )
-:skip_portproxy
 
 echo [server] === full stack is up ===
 echo [server] frontend ^(built^): http://localhost:%SERVER_FRONT_PORT%

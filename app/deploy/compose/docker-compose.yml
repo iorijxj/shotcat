@@ -107,7 +107,10 @@ services:
       # 可选
       OPENAI_API_KEY: ${OPENAI_API_KEY-}
     ports:
-      - "${SERVER_BACKEND_PORT:-18000}:8000"
+      # 只绑 loopback：LAN 流量由宿主机原生监听（server.bat 的 portproxy）终结后
+      # 经 127.0.0.1 转入，避免 WSL2 mirrored 网络直接面对 LAN 接口
+      # （与 VPN/Tun 类虚拟网卡共存时会间歇性断连）。
+      - "127.0.0.1:${SERVER_BACKEND_PORT:-18000}:8000"
     depends_on:
       mysql:
         condition: service_healthy
@@ -156,7 +159,8 @@ services:
     environment:
       BACKEND_URL: ${BACKEND_URL}
     ports:
-      - "${SERVER_FRONT_PORT:-18080}:80"
+      # 同 backend：只绑 loopback，LAN 访问走 server.bat 的 portproxy。
+      - "127.0.0.1:${SERVER_FRONT_PORT:-18080}:80"
     depends_on:
       - backend
 
