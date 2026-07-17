@@ -69,6 +69,14 @@ set "WSL_COMPOSE_ENV=%WSL_COMPOSE_DIR%/.env"
 set "WSL_COMPOSE_FILE=%WSL_COMPOSE_DIR%/docker-compose.yml"
 set "DOCKER=wsl -- docker"
 
+REM Pin the WSL VM so it can never idle-shutdown: vmIdleTimeout=-1 in
+REM .wslconfig proved to be silently ignored on this WSL build (the VM
+REM still stopped ~1 min after the last wsl.exe exited, taking every
+REM container down and changing the NAT IP). A persistent wsl.exe client
+REM handle prevents the idle stop deterministically.
+taskkill /FI "WINDOWTITLE eq shotcat-wsl-keepalive" /T /F >nul 2>&1
+start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
+
 %DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d --build
 if errorlevel 1 (
     echo [server] docker compose up failed
