@@ -32,6 +32,9 @@ app/**/.env
 bridge/units-*.json
 bridge/shots-*.json
 
+# 本地二进制工具（server.bat 用的 LAN 反向代理，手动下载放置）
+tools/caddy.exe
+
 # 本地运行数据与日志
 app/backend/jellyfish.db*
 app/backend/local-storage/

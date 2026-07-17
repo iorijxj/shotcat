@@ -18,8 +18,8 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 
 echo [stop] === stopping shotcat services (test.bat / run.bat / server.bat) ===
 
-echo [stop] closing tagged terminal windows from test.bat / run.bat...
-for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "shotcat-front-run") do (
+echo [stop] closing tagged windows from test.bat / run.bat / server.bat...
+for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "shotcat-front-run" "shotcat-caddy") do (
     taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 
