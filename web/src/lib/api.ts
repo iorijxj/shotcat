@@ -160,6 +160,8 @@ export const api = {
   },
   exportProjectKeyframes: (projectId: string) =>
     fetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/keyframes/export`),
+  exportProjectAssets: (projectId: string) =>
+    fetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/assets/export`),
 
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>

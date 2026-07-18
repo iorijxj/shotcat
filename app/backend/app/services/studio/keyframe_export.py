@@ -19,8 +19,8 @@ from app.services.common import entity_not_found
 
 
 @dataclass(frozen=True)
-class KeyframeExportItem:
-    """单张待导出的关键帧及其在 ZIP 中的文件名。"""
+class ArchiveItem:
+    """单个待写入 ZIP 的存储文件。"""
 
     filename: str
     storage_key: str
@@ -37,7 +37,7 @@ async def list_project_keyframe_export_items(
     db: AsyncSession,
     *,
     project_id: str,
-) -> tuple[str, list[KeyframeExportItem]]:
+) -> tuple[str, list[ArchiveItem]]:
     """读取项目关键帧清单，按章节和镜头顺序生成导出文件名。"""
     project = await db.get(Project, project_id)
     if project is None:
@@ -72,7 +72,7 @@ async def list_project_keyframe_export_items(
             f"第{int(chapter_index):02d}集_第{int(shot_index):03d}镜_"
             f"{_safe_filename_part(str(title), f'镜头{int(shot_index):03d}')}{extension}"
         )
-        items.append(KeyframeExportItem(filename=filename, storage_key=str(storage_key)))
+        items.append(ArchiveItem(filename=filename, storage_key=str(storage_key)))
     archive_name = f"{_safe_filename_part(project.name, '项目')}_关键帧.zip"
     return archive_name, items
 
@@ -121,8 +121,8 @@ def _zip_entry(filename: str, content: bytes, offset: int) -> tuple[bytes, bytes
     return local_header, encoded_name, content, central_header, next_offset
 
 
-async def iter_keyframe_archive(items: list[KeyframeExportItem]) -> AsyncIterator[bytes]:
-    """边读取单张关键帧边输出 ZIP，避免大项目在服务器内存或临时盘堆积整包文件。"""
+async def iter_file_archive(items: list[ArchiveItem], *, skipped_label: str) -> AsyncIterator[bytes]:
+    """边读取单个文件边输出 ZIP，避免大项目在服务器内存或临时盘堆积整包文件。"""
     central_records: list[bytes] = []
     skipped: list[str] = []
     offset = 0
@@ -139,8 +139,8 @@ async def iter_keyframe_archive(items: list[KeyframeExportItem]) -> AsyncIterato
         yield data
 
     if skipped:
-        note = ("以下关键帧无法读取，未包含在本次导出中：\n" + "\n".join(skipped) + "\n").encode("utf-8")
-        local_header, encoded_name, data, central, offset = _zip_entry("未导出关键帧.txt", note, offset)
+        note = (f"以下{skipped_label}无法读取，未包含在本次导出中：\n" + "\n".join(skipped) + "\n").encode("utf-8")
+        local_header, encoded_name, data, central, offset = _zip_entry(f"未导出{skipped_label}.txt", note, offset)
         central_records.append(central)
         yield local_header
         yield encoded_name
@@ -159,3 +159,9 @@ async def iter_keyframe_archive(items: list[KeyframeExportItem]) -> AsyncIterato
         offset,
         0,
     )
+
+
+async def iter_keyframe_archive(items: list[ArchiveItem]) -> AsyncIterator[bytes]:
+    """导出关键帧兼容入口。"""
+    async for chunk in iter_file_archive(items, skipped_label="关键帧"):
+        yield chunk
