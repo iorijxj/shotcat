@@ -46,6 +46,16 @@ if errorlevel 1 (
     goto :end
 )
 
+REM Without vmIdleTimeout=-1 in .wslconfig (not guaranteed to exist yet --
+REM that is why installing this pin can't wait until after the docker
+REM steps below), WSL2 can idle-shutdown between two separate wsl.exe
+REM invocations from this same script, taking the freshly-installed
+REM Docker Engine and every container down with it mid-install. A
+REM persistent wsl.exe client handle prevents that deterministically
+REM (same fix server.bat uses for the same problem).
+taskkill /FI "WINDOWTITLE eq shotcat-wsl-keepalive" /T /F >nul 2>&1
+start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
+
 wsl -- bash -lc "which docker" >nul 2>&1
 if errorlevel 1 (
     echo [install] Docker Engine not found inside WSL. Installing it there ^(no Docker Desktop, CLI-only^)...
@@ -55,6 +65,9 @@ if errorlevel 1 (
         goto :end
     )
     wsl --shutdown
+    REM wsl --shutdown just killed the keepalive from above along with
+    REM everything else in the VM -- restart it before doing anything more.
+    start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
     echo [install] Docker Engine installed inside WSL and the WSL session was restarted to pick up the new docker group membership.
 ) else (
     echo [install] docker ^(inside WSL^) OK
@@ -189,6 +202,26 @@ timeout /t 2 /nobreak >nul
 goto wait_mysql
 :mysql_ready
 echo [install] mysql is healthy
+
+REM Docker's health check only confirms mysqld is ready *inside* WSL. The
+REM Windows-host localhost:%MYSQL_PORT% forward is a separate WSL2 relay
+REM that can lag a beat behind a just-started container, and init_db.py
+REM below connects from the Windows host -- without this wait it can hit
+REM a transient WinError 1225 (connection refused) right after startup.
+echo [install] waiting for the Windows-host localhost:%MYSQL_PORT% forward to come up...
+set /a WAIT_FORWARD_SECONDS=0
+:wait_localhost_forward
+set "FORWARD_OK=False"
+for /f %%R in ('powershell -NoProfile -Command "(Test-NetConnection -ComputerName 127.0.0.1 -Port %MYSQL_PORT% -WarningAction SilentlyContinue).TcpTestSucceeded" 2^>nul') do set "FORWARD_OK=%%R"
+if /i "!FORWARD_OK!"=="True" goto localhost_forward_ready
+set /a WAIT_FORWARD_SECONDS+=2
+if !WAIT_FORWARD_SECONDS! GEQ 30 (
+    echo [install][WARN] localhost:%MYSQL_PORT% still not reachable from Windows after ~30s, continuing anyway
+    goto localhost_forward_ready
+)
+timeout /t 2 /nobreak >nul
+goto wait_localhost_forward
+:localhost_forward_ready
 
 REM ---- 4. Backend deps + DB schema/seed ----
 echo [install] syncing backend dependencies ^(uv sync^)...
