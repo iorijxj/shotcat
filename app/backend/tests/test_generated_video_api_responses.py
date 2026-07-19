@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.api.v1.routes.film import generated_video as route
 from app.dependencies import get_db
 from app.main import app
+from tests.conftest import AlwaysOwnedGetMixin
 
 
 class _FakeTaskRecord:
@@ -26,7 +27,7 @@ class _FakeTaskManager:
         return _FakeTaskRecord("video-task-1")
 
 
-class _FakeDB:
+class _FakeDB(AlwaysOwnedGetMixin):
     def __init__(self) -> None:
         self.added: list[object] = []
         self.committed = False

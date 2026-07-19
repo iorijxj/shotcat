@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # 也兼容 JSON 数组：'["http://a","http://b"]'
     cors_origins: str = "http://localhost:7788,http://127.0.0.1:7788"
 
+    # 鉴权：JWT 签名密钥，必须由环境变量提供，缺失时启动即报错（不给默认值，避免弱密钥）
+    auth_jwt_secret: str
+    auth_jwt_expire_minutes: int = 43200  # 30 天，内部工具场景无需频繁重登
+
     @property
     def cors_origins_list(self) -> list[str]:
         s = (self.cors_origins or "").strip()

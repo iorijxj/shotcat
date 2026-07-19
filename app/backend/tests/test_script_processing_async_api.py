@@ -20,10 +20,11 @@ from app.services.script_processing_tasks import (
     VARIANT_ANALYSIS_RELATION_TYPE,
 )
 from app.core.task_manager.types import TaskStatus
+from tests.conftest import AlwaysOwnedGetMixin
 
 
 def _override_db():
-    class _FakeDB:
+    class _FakeDB(AlwaysOwnedGetMixin):
         async def commit(self) -> None:
             return None
 

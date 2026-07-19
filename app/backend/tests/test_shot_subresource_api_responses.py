@@ -28,6 +28,7 @@ from app.models.studio import (
     ShotStatus,
     VFXType,
 )
+from tests.conftest import TEST_USER_ID
 
 
 class _FakeShotSubresourceDB:
@@ -126,6 +127,7 @@ def _seed_project_and_shot(db: _FakeShotSubresourceDB) -> None:
         unify_style=True,
         progress=0,
         stats={},
+        owner_id=TEST_USER_ID,
     )
     project.created_at = now
     project.updated_at = now
@@ -223,10 +225,13 @@ def test_create_shot_detail_returns_created_envelope(client: TestClient) -> None
 
 
 def test_get_shot_detail_not_found_returns_api_response(client: TestClient) -> None:
+    # 归属校验先确认 shot-1（存在且归属当前用户）才会往下查 ShotDetail 本身；
+    # 因此这里要先把 shot 链路种好，测的是"shot 存在但还没建 ShotDetail 行"这个真实场景。
     db = _FakeShotSubresourceDB()
+    _seed_project_and_shot(db)
     app.dependency_overrides[get_db] = _override_db(db)
     try:
-        response = client.get("/api/v1/studio/shot-details/missing")
+        response = client.get("/api/v1/studio/shot-details/shot-1")
     finally:
         app.dependency_overrides.clear()
 

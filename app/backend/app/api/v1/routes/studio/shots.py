@@ -4,10 +4,30 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.services.common import entity_not_found
+
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
+from app.models.studio import (
+    ProjectActorLink,
+    ProjectCostumeLink,
+    ProjectPropLink,
+    ProjectSceneLink,
+    Shot,
+    ShotDialogLine,
+    ShotExtractedCandidate,
+    ShotExtractedDialogueCandidate,
+    ShotFrameImage,
+)
+from app.services.auth.ownership import (
+    assert_chapter_owned,
+    assert_project_owned,
+    assert_shot_owned,
+    require_project_access_via_shot,
+)
 from app.services.studio.shot_assets import (
     create_project_asset_link as create_project_asset_link_service,
     delete_project_asset_link as delete_project_asset_link_service,
@@ -121,13 +141,15 @@ FRAME_IMAGE_ORDER_FIELDS = {"id", "frame_type", "created_at", "updated_at"}
 )
 async def list_shots(
     db: AsyncSession = Depends(get_db),
-    chapter_id: str | None = Query(None, description="按章节过滤"),
+    current_user: User = Depends(get_current_user),
+    chapter_id: str = Query(..., min_length=1, description="按章节过滤（必填）"),
     q: str | None = Query(None, description="关键字，过滤 title/script_excerpt"),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[ShotRead]]:
+    await assert_chapter_owned(db, chapter_id=chapter_id, current_user=current_user)
     return await list_shots_paginated(
         db,
         chapter_id=chapter_id,
@@ -149,7 +171,9 @@ async def list_shots(
 async def create_shot(
     body: ShotCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotRead]:
+    await assert_chapter_owned(db, chapter_id=body.chapter_id, current_user=current_user)
     obj = await create_shot_service(db, body=body)
     return created_response(await build_shot_read(db, shot=obj))
 
@@ -162,7 +186,9 @@ async def create_shot(
 async def list_shot_runtime_summary(
     chapter_id: str = Query(..., description="章节 ID"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[list[ShotRuntimeSummaryRead]]:
+    await assert_chapter_owned(db, chapter_id=chapter_id, current_user=current_user)
     rows = await list_shot_runtime_summary_by_chapter(db, chapter_id=chapter_id)
     return success_response(rows)
 
@@ -175,6 +201,7 @@ async def list_shot_runtime_summary(
 async def get_shot_extraction_draft(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[StudioScriptExtractionDraft]:
     data = await build_script_extraction_draft_for_shot(db, shot_id)
     return success_response(data)
@@ -188,6 +215,7 @@ async def get_shot_extraction_draft(
 async def get_shot_extracted_candidates(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[list[ShotExtractedCandidateRead]]:
     rows = await list_shot_extracted_candidates(db, shot_id=shot_id)
     return success_response([ShotExtractedCandidateRead.model_validate(row) for row in rows])
@@ -201,6 +229,7 @@ async def get_shot_extracted_candidates(
 async def get_shot_extracted_dialogue_candidates(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[list[ShotExtractedDialogueCandidateRead]]:
     rows = await list_shot_extracted_dialogue_candidates(db, shot_id=shot_id)
     return success_response([ShotExtractedDialogueCandidateRead.model_validate(row) for row in rows])
@@ -214,6 +243,7 @@ async def get_shot_extracted_dialogue_candidates(
 async def get_shot_assets_overview_api(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotAssetsOverviewRead]:
     data = await get_shot_assets_overview(db, shot_id=shot_id)
     return success_response(data)
@@ -227,6 +257,7 @@ async def get_shot_assets_overview_api(
 async def get_shot_preparation_state_api(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotPreparationStateRead]:
     data = await build_shot_preparation_state(db, shot_id=shot_id)
     return success_response(data)
@@ -241,7 +272,9 @@ async def link_existing_asset_for_preparation_api(
     shot_id: str,
     body: ShotPreparationLinkRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     data = await link_existing_asset_for_preparation(
         db,
         project_id=body.project_id,
@@ -267,6 +300,7 @@ async def preview_shot_video_prompt(
     shot_id: str,
     template_id: str | None = Query(None, description="指定视频提示词模板 ID；不传则使用默认模板"),
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotVideoPromptPreviewRead]:
     derived = await derive_video_preview(
         db,
@@ -291,6 +325,7 @@ async def get_shot_video_readiness_api(
     shot_id: str,
     reference_mode: str = Query("text_only", description="参考模式：first/last/key/first_last/first_last_key/text_only"),
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotVideoReadinessRead]:
     data = await get_shot_video_readiness(db, shot_id=shot_id, reference_mode=reference_mode)
     return success_response(data)
@@ -305,6 +340,7 @@ async def update_shot_skip_extraction(
     shot_id: str,
     body: ShotSkipExtractionUpdate,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
     shot = await set_skip_extraction(db, shot_id=shot_id, skip=body.skip)
     data = await build_shot_preparation_state(db, shot_id=shot.id)
@@ -329,7 +365,12 @@ async def link_extracted_candidate(
     candidate_id: int,
     body: ShotExtractedCandidateLinkRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
+    candidate = await db.get(ShotExtractedCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotExtractedCandidate"))
+    await assert_shot_owned(db, shot_id=candidate.shot_id, current_user=current_user)
     row = await link_shot_extracted_candidate(
         db,
         candidate_id=candidate_id,
@@ -352,7 +393,12 @@ async def link_extracted_candidate(
 async def ignore_extracted_candidate(
     candidate_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
+    candidate = await db.get(ShotExtractedCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotExtractedCandidate"))
+    await assert_shot_owned(db, shot_id=candidate.shot_id, current_user=current_user)
     row = await ignore_shot_extracted_candidate(db, candidate_id=candidate_id)
     data = await build_shot_preparation_state(db, shot_id=row.shot_id)
     return success_response(
@@ -372,7 +418,12 @@ async def accept_extracted_dialogue_candidate(
     candidate_id: int,
     body: ShotExtractedDialogueCandidateAcceptRequest | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
+    candidate = await db.get(ShotExtractedDialogueCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotExtractedDialogueCandidate"))
+    await assert_shot_owned(db, shot_id=candidate.shot_id, current_user=current_user)
     row = await accept_shot_extracted_dialogue_candidate(db, candidate_id=candidate_id, body=body)
     data = await build_shot_preparation_state(db, shot_id=row.shot_id)
     return success_response(
@@ -391,7 +442,12 @@ async def accept_extracted_dialogue_candidate(
 async def ignore_extracted_dialogue_candidate(
     candidate_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotPreparationMutationResultRead]:
+    candidate = await db.get(ShotExtractedDialogueCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotExtractedDialogueCandidate"))
+    await assert_shot_owned(db, shot_id=candidate.shot_id, current_user=current_user)
     row = await ignore_shot_extracted_dialogue_candidate(db, candidate_id=candidate_id)
     data = await build_shot_preparation_state(db, shot_id=row.shot_id)
     return success_response(
@@ -410,6 +466,7 @@ async def ignore_extracted_dialogue_candidate(
 async def get_shot(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotRead]:
     obj = await get_shot_service(db, shot_id=shot_id)
     return success_response(await build_shot_read(db, shot=obj))
@@ -424,7 +481,11 @@ async def update_shot(
     shot_id: str,
     body: ShotUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotRead]:
+    if body.chapter_id is not None:
+        await assert_chapter_owned(db, chapter_id=body.chapter_id, current_user=current_user)
     obj = await update_shot_service(db, shot_id=shot_id, body=body)
     return success_response(await build_shot_read(db, shot=obj))
 
@@ -437,6 +498,7 @@ async def update_shot(
 async def delete_shot(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[None]:
     await delete_shot_service(db, shot_id=shot_id)
     return empty_response()
@@ -452,6 +514,7 @@ async def list_shot_linked_assets(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[PaginatedData[ShotLinkedAssetItem]]:
     return await list_shot_linked_assets_paginated(
         db,
@@ -471,6 +534,7 @@ async def list_shot_linked_assets(
 )
 async def list_shot_details(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     shot_id: str | None = Query(None, description="按镜头过滤（id 同 shot_id）"),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
@@ -485,6 +549,7 @@ async def list_shot_details(
         page=page,
         page_size=page_size,
         allow_fields=DETAIL_ORDER_FIELDS,
+        owner_id=current_user.id,
     )
 
 
@@ -497,7 +562,9 @@ async def list_shot_details(
 async def create_shot_detail(
     body: ShotDetailCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotDetailRead]:
+    await assert_shot_owned(db, shot_id=body.id, current_user=current_user)
     obj = await create_shot_detail_service(db, body=body)
     return created_response(ShotDetailRead.model_validate(obj))
 
@@ -510,6 +577,7 @@ async def create_shot_detail(
 async def get_shot_detail(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotDetailRead]:
     obj = await get_shot_detail_service(db, shot_id=shot_id)
     return success_response(ShotDetailRead.model_validate(obj))
@@ -524,6 +592,7 @@ async def update_shot_detail(
     shot_id: str,
     body: ShotDetailUpdate,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[ShotDetailRead]:
     obj = await update_shot_detail_service(db, shot_id=shot_id, body=body)
     return success_response(ShotDetailRead.model_validate(obj))
@@ -537,6 +606,7 @@ async def update_shot_detail(
 async def delete_shot_detail(
     shot_id: str,
     db: AsyncSession = Depends(get_db),
+    _shot=Depends(require_project_access_via_shot),
 ) -> ApiResponse[None]:
     await delete_shot_detail_service(db, shot_id=shot_id)
     return empty_response()
@@ -552,6 +622,7 @@ async def delete_shot_detail(
 )
 async def list_shot_dialog_lines(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     shot_detail_id: str | None = Query(None, description="按镜头细节过滤"),
     q: str | None = Query(None, description="关键字，过滤 text"),
     order: str | None = Query(None),
@@ -568,6 +639,7 @@ async def list_shot_dialog_lines(
         page=page,
         page_size=page_size,
         allow_fields=DIALOG_ORDER_FIELDS,
+        owner_id=current_user.id,
     )
 
 
@@ -580,7 +652,9 @@ async def list_shot_dialog_lines(
 async def create_shot_dialog_line(
     body: ShotDialogLineCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotDialogLineRead]:
+    await assert_shot_owned(db, shot_id=body.shot_detail_id, current_user=current_user)
     obj = await create_shot_dialog_line_service(db, body=body)
     return created_response(ShotDialogLineRead.model_validate(obj))
 
@@ -594,7 +668,12 @@ async def update_shot_dialog_line(
     line_id: int,
     body: ShotDialogLineUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotDialogLineRead]:
+    line = await db.get(ShotDialogLine, line_id)
+    if line is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotDialogLine"))
+    await assert_shot_owned(db, shot_id=line.shot_detail_id, current_user=current_user)
     obj = await update_shot_dialog_line_service(db, line_id=line_id, body=body)
     return success_response(ShotDialogLineRead.model_validate(obj))
 
@@ -607,7 +686,11 @@ async def update_shot_dialog_line(
 async def delete_shot_dialog_line(
     line_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    line = await db.get(ShotDialogLine, line_id)
+    if line is not None:
+        await assert_shot_owned(db, shot_id=line.shot_detail_id, current_user=current_user)
     await delete_shot_dialog_line_service(db, line_id=line_id)
     return empty_response()
 
@@ -622,6 +705,7 @@ async def delete_shot_dialog_line(
 )
 async def list_shot_frame_images(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     shot_detail_id: str | None = Query(None, description="按镜头细节过滤"),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
@@ -636,6 +720,7 @@ async def list_shot_frame_images(
         page=page,
         page_size=page_size,
         allow_fields=FRAME_IMAGE_ORDER_FIELDS,
+        owner_id=current_user.id,
     )
 
 
@@ -648,7 +733,9 @@ async def list_shot_frame_images(
 async def create_shot_frame_image(
     body: ShotFrameImageCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotFrameImageRead]:
+    await assert_shot_owned(db, shot_id=body.shot_detail_id, current_user=current_user)
     obj = await create_shot_frame_image_service(db, body=body)
     return created_response(ShotFrameImageRead.model_validate(obj))
 
@@ -662,7 +749,12 @@ async def update_shot_frame_image(
     image_id: int,
     body: ShotFrameImageUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotFrameImageRead]:
+    image = await db.get(ShotFrameImage, image_id)
+    if image is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("ShotFrameImage"))
+    await assert_shot_owned(db, shot_id=image.shot_detail_id, current_user=current_user)
     obj = await update_shot_frame_image_service(db, image_id=image_id, body=body)
     return success_response(ShotFrameImageRead.model_validate(obj))
 
@@ -675,7 +767,11 @@ async def update_shot_frame_image(
 async def delete_shot_frame_image(
     image_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    image = await db.get(ShotFrameImage, image_id)
+    if image is not None:
+        await assert_shot_owned(db, shot_id=image.shot_detail_id, current_user=current_user)
     await delete_shot_frame_image_service(db, image_id=image_id)
     return empty_response()
 
@@ -691,7 +787,8 @@ async def delete_shot_frame_image(
 async def list_project_entity_links(
     entity_type: str,
     db: AsyncSession = Depends(get_db),
-    project_id: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    project_id: str = Query(..., min_length=1, description="必填，项目级隔离"),
     chapter_id: str | None = Query(None),
     shot_id: str | None = Query(None),
     asset_id: str | None = Query(None),
@@ -700,6 +797,7 @@ async def list_project_entity_links(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[Any]]:
+    await assert_project_owned(db, project_id=project_id, current_user=current_user)
     return await list_project_asset_links_paginated(
         db=db,
         entity_type=entity_type,
@@ -724,7 +822,9 @@ async def list_project_entity_links(
 async def create_project_actor_link(
     body: ProjectAssetLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProjectActorLinkRead]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     obj = await create_project_asset_link_service(db, entity_type="actor", body=body)
     return created_response(ProjectActorLinkRead.model_validate(obj))
 
@@ -738,7 +838,11 @@ async def create_project_actor_link(
 async def delete_project_actor_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    link = await db.get(ProjectActorLink, link_id)
+    if link is not None:
+        await assert_project_owned(db, project_id=link.project_id, current_user=current_user)
     await delete_project_asset_link_service(db, entity_type="actor", link_id=link_id)
     return empty_response()
 
@@ -752,7 +856,9 @@ async def delete_project_actor_link(
 async def create_project_scene_link(
     body: ProjectAssetLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProjectSceneLinkRead]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     obj = await create_project_asset_link_service(db, entity_type="scene", body=body)
     return created_response(ProjectSceneLinkRead.model_validate(obj))
 
@@ -766,7 +872,11 @@ async def create_project_scene_link(
 async def delete_project_scene_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    link = await db.get(ProjectSceneLink, link_id)
+    if link is not None:
+        await assert_project_owned(db, project_id=link.project_id, current_user=current_user)
     await delete_project_asset_link_service(db, entity_type="scene", link_id=link_id)
     return empty_response()
 
@@ -780,7 +890,9 @@ async def delete_project_scene_link(
 async def create_project_prop_link(
     body: ProjectAssetLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProjectPropLinkRead]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     obj = await create_project_asset_link_service(db, entity_type="prop", body=body)
     return created_response(ProjectPropLinkRead.model_validate(obj))
 
@@ -794,7 +906,11 @@ async def create_project_prop_link(
 async def delete_project_prop_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    link = await db.get(ProjectPropLink, link_id)
+    if link is not None:
+        await assert_project_owned(db, project_id=link.project_id, current_user=current_user)
     await delete_project_asset_link_service(db, entity_type="prop", link_id=link_id)
     return empty_response()
 
@@ -808,7 +924,9 @@ async def delete_project_prop_link(
 async def create_project_costume_link(
     body: ProjectAssetLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProjectCostumeLinkRead]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     obj = await create_project_asset_link_service(db, entity_type="costume", body=body)
     return created_response(ProjectCostumeLinkRead.model_validate(obj))
 
@@ -821,6 +939,10 @@ async def create_project_costume_link(
 async def delete_project_costume_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    link = await db.get(ProjectCostumeLink, link_id)
+    if link is not None:
+        await assert_project_owned(db, project_id=link.project_id, current_user=current_user)
     await delete_project_asset_link_service(db, entity_type="costume", link_id=link_id)
     return empty_response()

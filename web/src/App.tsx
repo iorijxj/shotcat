@@ -1,10 +1,12 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { api, type Entity, type Project, type Shot } from './lib/api'
+import { isLoggedIn } from './lib/auth'
 import Storyboard from './pages/Storyboard'
 import Cast from './pages/Cast'
 import Frames from './pages/Frames'
 import Lobby from './pages/Lobby'
+import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Script from './pages/Script'
 import Gallery from './pages/Gallery'
@@ -40,6 +42,12 @@ function Placeholder({ title }: { title: string }) {
 const ETYPE_ZH: Record<string, string> = { character: '角色', scene: '场景', prop: '道具', costume: '服装' }
 
 export default function App() {
+  const [loggedIn, setLoggedIn] = useState(isLoggedIn())
+  useEffect(() => {
+    const onLogout = () => setLoggedIn(false)
+    window.addEventListener('duanju:logout', onLogout)
+    return () => window.removeEventListener('duanju:logout', onLogout)
+  }, [])
   const [project, setProject] = useState<Project | null>(null)
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('duanju.theme') as 'dark' | 'light') || 'dark')
   useEffect(() => {
@@ -55,8 +63,9 @@ export default function App() {
   const inStage = STAGE_PATHS.some((p) => loc.pathname.startsWith(p)) // 阶段页才显示左轨；作品库/项目页独立
   const onLobby = loc.pathname === '/' || loc.pathname.startsWith('/projects') // 首页：不显示任何项目上下文
 
-  // 启动：载入项目列表，恢复上次选中的项目
+  // 启动：载入项目列表，恢复上次选中的项目（未登录时不发请求，避免无意义的 401 重试）
   useEffect(() => {
+    if (!loggedIn) return
     let stopped = false
     let timer: number | null = null
     const load = () => {
@@ -76,7 +85,7 @@ export default function App() {
       stopped = true
       if (timer != null) window.clearTimeout(timer)
     }
-  }, [])
+  }, [loggedIn])
 
   const openProject = (p: Project) => {
     setProject(p)
@@ -138,6 +147,8 @@ export default function App() {
     (s.title || '').toLowerCase().includes(ql) || (s.script_excerpt || '').toLowerCase().includes(ql)).slice(0, 8) : []
   const hitEnts = ql && sIdx ? sIdx.ents.filter((e) => e.name.toLowerCase().includes(ql)).slice(0, 6) : []
   const goHit = (to: string) => { setSearchOpen(false); setQ(''); navigate(to) }
+
+  if (!loggedIn) return <Login onSuccess={() => setLoggedIn(true)} />
 
   return (
     <div className="app">

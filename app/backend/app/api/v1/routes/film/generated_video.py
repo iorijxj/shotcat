@@ -5,9 +5,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.task_links import GenerationTaskLink
 from app.schemas.studio.shots import ShotVideoPromptPackRead
+from app.services.auth.ownership import assert_shot_owned
 from app.services.film.generated_video import build_run_args, preview_prompt_and_images
 from app.services.studio.shot_status import mark_shot_generating
 from app.tasks.execute_task import enqueue_task_execution
@@ -35,8 +37,10 @@ class VideoPromptPreviewResponse(BaseModel):
 async def preview_video_generation_prompt(
     body: VideoGenerationTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[VideoPromptPreviewResponse]:
     """预览视频生成的提示词与自动关联参考图。"""
+    await assert_shot_owned(db, shot_id=body.shot_id, current_user=current_user)
     prompt, images, pack = await preview_prompt_and_images(
         db,
         shot_id=body.shot_id,
@@ -56,8 +60,10 @@ async def preview_video_generation_prompt(
 async def create_video_generation_task(
     body: VideoGenerationTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
     """创建视频生成任务并后台执行，结果通过 /tasks/{task_id}/result 获取。"""
+    await assert_shot_owned(db, shot_id=body.shot_id, current_user=current_user)
 
     store = SqlAlchemyTaskStore(db)
     tm = TaskManager(store=store, strategies={})

@@ -10,18 +10,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.studio import Project
 from app.models.types import ProjectStyle, ProjectVisualStyle
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
+from app.services.auth.ownership import require_project_owner
 from app.services.common import (
     create_and_refresh,
-    delete_if_exists,
     entity_already_exists,
-    entity_not_found,
     ensure_not_exists,
     flush_and_refresh,
-    get_or_404,
     patch_model,
 )
 from app.schemas.studio.projects import (
@@ -92,13 +91,14 @@ async def get_project_style_options(
 )
 async def list_projects(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
     order: str | None = Query(None, description="排序字段"),
     is_desc: bool = Query(False, description="是否倒序"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[ProjectRead]]:
-    stmt = select(Project)
+    stmt = select(Project).where(Project.owner_id == current_user.id)
     stmt = apply_keyword_filter(stmt, q=q, fields=[Project.name, Project.description])
     stmt = apply_order(stmt, model=Project, order=order, is_desc=is_desc, allow_fields=PROJECT_ORDER_FIELDS, default="created_at")
     items, total = await paginate(db, stmt=stmt, page=page, page_size=page_size)
@@ -113,6 +113,7 @@ async def list_projects(
 async def export_project_keyframes(
     project_id: str,
     db: AsyncSession = Depends(get_db),
+    _project: Project = Depends(require_project_owner),
 ) -> StreamingResponse:
     """导出已有关键帧，ZIP 内按章节、镜头序号和镜头标题命名。"""
     filename, items = await list_project_keyframe_export_items(db, project_id=project_id)
@@ -134,6 +135,7 @@ async def export_project_keyframes(
 async def export_project_assets(
     project_id: str,
     db: AsyncSession = Depends(get_db),
+    _project: Project = Depends(require_project_owner),
 ) -> StreamingResponse:
     """导出角色、场景、道具的全部已生成设定图，按类型目录和资产名称命名。"""
     filename, items = await list_project_asset_export_items(db, project_id=project_id)
@@ -156,6 +158,7 @@ async def export_project_assets(
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProjectRead]:
     await ensure_not_exists(
         db,
@@ -167,7 +170,8 @@ async def create_project(
         _validate_project_style_combo(visual_style=body.visual_style, style=body.style)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    obj = await create_and_refresh(db, Project(**body.model_dump()))
+    # owner_id 只能来自登录态，不能从请求体读，防止伪造归属
+    obj = await create_and_refresh(db, Project(**body.model_dump(), owner_id=current_user.id))
     return created_response(ProjectRead.model_validate(obj))
 
 
@@ -178,9 +182,8 @@ async def create_project(
 )
 async def get_project(
     project_id: str,
-    db: AsyncSession = Depends(get_db),
+    obj: Project = Depends(require_project_owner),
 ) -> ApiResponse[ProjectRead]:
-    obj = await get_or_404(db, Project, project_id, detail=entity_not_found("Project"))
     return success_response(ProjectRead.model_validate(obj))
 
 
@@ -193,8 +196,8 @@ async def update_project(
     project_id: str,
     body: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
+    obj: Project = Depends(require_project_owner),
 ) -> ApiResponse[ProjectRead]:
-    obj = await get_or_404(db, Project, project_id, detail=entity_not_found("Project"))
     update_data = body.model_dump(exclude_unset=True)
     visual_style = update_data.get("visual_style", obj.visual_style)
     style = update_data.get("style", obj.style)
@@ -216,6 +219,8 @@ async def update_project(
 async def delete_project(
     project_id: str,
     db: AsyncSession = Depends(get_db),
+    obj: Project = Depends(require_project_owner),
 ) -> ApiResponse[None]:
-    await delete_if_exists(db, Project, project_id)
+    await db.delete(obj)
+    await db.flush()
     return empty_response()

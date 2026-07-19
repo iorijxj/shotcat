@@ -19,9 +19,10 @@ from app.schemas.studio.shots import (
     ShotRuntimeSummaryRead,
     ShotRead,
 )
+from tests.conftest import AlwaysOwnedGetMixin
 
 
-class _FakeDB:
+class _FakeDB(AlwaysOwnedGetMixin):
     pass
 
 

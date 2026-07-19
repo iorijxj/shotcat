@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+# TODO(二期): 本文件的任务/任务关联接口按 GenerationTaskLink.relation_type 多态引用
+# project/chapter/shot/character/prop/... 之一，没有统一外键，无法用现有 ownership 助手
+# 直接解析归属。一期只依赖路由级"必须登录"门禁（见 app/api/v1/__init__.py 里
+# film 路由的 dependencies=[Depends(get_current_user)]），不做精确的项目归属校验——
+# 已知残留风险：登录用户之间可互相查询/操作彼此的任务状态与任务关联，但操作对象是
+# 任务执行状态本身，不是项目数据内容。二期需按 relation_type 分支 join 到 project 校验。
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

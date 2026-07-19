@@ -7,13 +7,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
 from app.schemas.studio.entity_existence import (
     EntityNameExistenceCheckRequest,
     EntityNameExistenceCheckResponse,
 )
 from app.schemas.studio.entity_usage import EntityDeleteResult, EntityUsageSummaryRead
+from app.services.auth.ownership import assert_entity_owned, assert_project_owned
 from app.services.studio import StudioEntitiesService
 
 router = APIRouter()
@@ -27,7 +29,9 @@ router = APIRouter()
 async def check_entity_names_existence(
     body: EntityNameExistenceCheckRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[EntityNameExistenceCheckResponse]:
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     service = StudioEntitiesService(db)
     data = await service.check_names_existence(
         project_id=body.project_id,
@@ -44,15 +48,17 @@ async def check_entity_names_existence(
 async def list_entities(
     entity_type: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
     style: str | None = Query(None, description="题材/风格（单值）"),
     visual_style: str | None = Query(None, description="画面表现形式（单值：真人/动漫）"),
-    project_id: str | None = Query(None, description="按项目过滤（项目级隔离）"),
+    project_id: str = Query(..., min_length=1, description="按项目过滤（必填，项目级隔离）"),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[dict[str, Any]]]:
+    await assert_project_owned(db, project_id=project_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload, total = await service.list_entities(
         entity_type=entity_type,
@@ -73,7 +79,11 @@ async def create_entity(
     entity_type: str,
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[dict[str, Any]]:
+    project_id = body.get("project_id")
+    if project_id:
+        await assert_project_owned(db, project_id=project_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload = await service.create_entity(entity_type=entity_type, body=body)
     return created_response(payload)
@@ -88,15 +98,23 @@ async def list_entity_usage_summary(
     entity_type: str,
     project_id: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[list[EntityUsageSummaryRead]]:
     """供造型页一次加载资产被哪些镜头画面引用。"""
+    await assert_project_owned(db, project_id=project_id, current_user=current_user)
     service = StudioEntitiesService(db)
     data = await service.list_entity_usage_summaries(entity_type=entity_type, project_id=project_id)
     return success_response([EntityUsageSummaryRead.model_validate(item) for item in data])
 
 
 @router.get("/{entity_type}/{entity_id}", response_model=ApiResponse[dict[str, Any]], summary="统一获取实体")
-async def get_entity(entity_type: str, entity_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse[dict[str, Any]]:
+async def get_entity(
+    entity_type: str,
+    entity_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApiResponse[dict[str, Any]]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload = await service.get_entity(entity_type=entity_type, entity_id=entity_id)
     return success_response(payload)
@@ -108,15 +126,23 @@ async def update_entity(
     entity_id: str,
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[dict[str, Any]]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload = await service.update_entity(entity_type=entity_type, entity_id=entity_id, body=body)
     return success_response(payload)
 
 
 @router.delete("/{entity_type}/{entity_id}", response_model=ApiResponse[EntityDeleteResult], summary="统一删除实体")
-async def delete_entity(entity_type: str, entity_id: str, db: AsyncSession = Depends(get_db)) -> ApiResponse[EntityDeleteResult]:
+async def delete_entity(
+    entity_type: str,
+    entity_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApiResponse[EntityDeleteResult]:
     """删除资产；若为派生状态，则把镜头引用自动回退到基准资产。"""
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     data = await service.delete_entity(entity_type=entity_type, entity_id=entity_id)
     return success_response(EntityDeleteResult.model_validate(data))
@@ -131,11 +157,13 @@ async def list_entity_images(
     entity_type: str,
     entity_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[dict[str, Any]]]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload, total = await service.list_entity_images(
         entity_type=entity_type,
@@ -159,7 +187,9 @@ async def create_entity_image(
     entity_id: str,
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[dict[str, Any]]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload = await service.create_entity_image(entity_type=entity_type, entity_id=entity_id, body=body)
     return created_response(payload)
@@ -176,7 +206,9 @@ async def update_entity_image(
     image_id: int,
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[dict[str, Any]]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     payload = await service.update_entity_image(
         entity_type=entity_type,
@@ -197,7 +229,9 @@ async def delete_entity_image(
     entity_id: str,
     image_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    await assert_entity_owned(db, entity_type=entity_type, entity_id=entity_id, current_user=current_user)
     service = StudioEntitiesService(db)
     await service.delete_entity_image(entity_type=entity_type, entity_id=entity_id, image_id=image_id)
     return empty_response()

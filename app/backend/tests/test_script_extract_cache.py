@@ -5,11 +5,15 @@ from __future__ import annotations
 import pytest
 
 from app.api.v1.routes import script_processing as route
+from app.models.auth import User
 from app.schemas.skills.script_processing import StudioScriptExtractionDraft
 from app.services.script_extraction_cache import (
     build_script_extract_cache_key,
     clear_script_extract_cache,
 )
+from tests.conftest import TEST_USER_ID, AlwaysOwnedGetMixin
+
+_FAKE_USER = User(id=TEST_USER_ID, username="test", password_hash="x")
 
 
 def _build_result() -> StudioScriptExtractionDraft:
@@ -25,7 +29,7 @@ def _build_result() -> StudioScriptExtractionDraft:
     )
 
 
-class _FakeDB:
+class _FakeDB(AlwaysOwnedGetMixin):
     def __init__(self) -> None:
         self.committed = False
 
@@ -64,8 +68,8 @@ async def test_extract_script_uses_cache_by_default(monkeypatch):
         refresh_cache=False,
     )
 
-    first = await route.extract_script(request, llm=None, db=db)
-    second = await route.extract_script(request, llm=None, db=db)
+    first = await route.extract_script(request, llm=None, db=db, current_user=_FAKE_USER)
+    second = await route.extract_script(request, llm=None, db=db, current_user=_FAKE_USER)
 
     assert first.data is not None
     assert second.data is not None
@@ -102,8 +106,8 @@ async def test_extract_script_refresh_cache_forces_recompute(monkeypatch):
     )
     refresh_request = request.model_copy(update={"refresh_cache": True})
 
-    await route.extract_script(request, llm=None, db=db)
-    refreshed = await route.extract_script(refresh_request, llm=None, db=db)
+    await route.extract_script(request, llm=None, db=db, current_user=_FAKE_USER)
+    refreshed = await route.extract_script(refresh_request, llm=None, db=db, current_user=_FAKE_USER)
 
     assert refreshed.meta == {"from_cache": False}
     assert len(calls) == 2

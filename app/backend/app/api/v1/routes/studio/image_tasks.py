@@ -22,7 +22,9 @@ from app.core.contracts.image_generation import ImageResolutionProfile, ImageTar
 from app.core.db import async_session_maker
 from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
 from app.core.task_manager.types import TaskStatus
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
+from app.services.auth.ownership import assert_entity_owned, assert_shot_owned
 from app.models.studio import (
     ActorImage,
     CharacterImage,
@@ -803,10 +805,14 @@ def _spawn_frame_image_batch(
 )
 async def create_asset_image_batch(
     body: AssetImageBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[AssetImageBatchCreated]:
     items = [item for item in body.items if item.prompt.strip()]
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no items to generate")
+    for item in items:
+        await assert_entity_owned(db, entity_type=item.type, entity_id=item.id, current_user=current_user)
     batch_id = f"asset_batch_{uuid.uuid4().hex}"
     with _BATCH_LOCK:
         _ASSET_IMAGE_BATCHES[batch_id] = {
@@ -846,6 +852,7 @@ async def create_asset_image_batch(
     summary="查询设定页造型图批量生成进度",
 )
 async def get_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchStatus]:
+    # TODO(二期): batch 是进程内内存态、无 project_id 快照，暂不做归属校验，只靠全局登录门禁。
     snapshot = _batch_snapshot(batch_id)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
@@ -859,6 +866,7 @@ async def get_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchSta
     summary="停止设定页造型图批量生成",
 )
 async def cancel_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatchStatus]:
+    # TODO(二期): 同上，暂不做归属校验。
     task_id = _request_batch_cancel(_ASSET_IMAGE_BATCHES, batch_id)
     if task_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
@@ -877,10 +885,14 @@ async def cancel_asset_image_batch(batch_id: str) -> ApiResponse[AssetImageBatch
 )
 async def create_frame_image_batch(
     body: FrameImageBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[FrameImageBatchCreated]:
     items = [item for item in body.items if item.shot_id.strip()]
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no shots to generate")
+    for item in items:
+        await assert_shot_owned(db, shot_id=item.shot_id, current_user=current_user)
     batch_id = f"frame_batch_{uuid.uuid4().hex}"
     with _BATCH_LOCK:
         _FRAME_IMAGE_BATCHES[batch_id] = {
@@ -925,6 +937,7 @@ async def create_frame_image_batch(
     summary="查询镜头画面批量生成进度",
 )
 async def get_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchStatus]:
+    # TODO(二期): 同上，暂不做归属校验。
     snapshot = _frame_batch_snapshot(batch_id)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
@@ -938,6 +951,7 @@ async def get_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchSta
     summary="停止镜头画面批量生成",
 )
 async def cancel_frame_image_batch(batch_id: str) -> ApiResponse[FrameImageBatchStatus]:
+    # TODO(二期): 同上，暂不做归属校验。
     task_id = _request_batch_cancel(_FRAME_IMAGE_BATCHES, batch_id)
     if task_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
@@ -959,8 +973,10 @@ async def create_actor_image_generation_task(
     actor_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
     """为指定演员创建图片生成任务，并通过 `GenerationTaskLink` 关联。"""
+    await assert_entity_owned(db, entity_type="actor", entity_id=actor_id, current_user=current_user)
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(
@@ -997,7 +1013,9 @@ async def render_actor_image_prompt(
     actor_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[RenderedPromptResponse]:
+    await assert_entity_owned(db, entity_type="actor", entity_id=actor_id, current_user=current_user)
     base = await _build_actor_image_base_draft_service(
         db,
         actor_id=actor_id,
@@ -1019,6 +1037,7 @@ async def create_asset_image_generation_task(
     asset_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
     """为道具/场景/服装创建图片生成任务。
 
@@ -1026,6 +1045,7 @@ async def create_asset_image_generation_task(
     - path 参数 asset_id 为对应资产 ID
     - body.image_id 必须为该资产下对应图片表记录的 ID（PropImage/SceneImage/CostumeImage）
     """
+    await assert_entity_owned(db, entity_type=asset_type, entity_id=asset_id, current_user=current_user)
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(
@@ -1065,7 +1085,9 @@ async def render_asset_image_prompt(
     asset_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[RenderedPromptResponse]:
+    await assert_entity_owned(db, entity_type=asset_type, entity_id=asset_id, current_user=current_user)
     base = await _build_asset_image_base_draft_service(
         db,
         asset_type=asset_type,
@@ -1087,12 +1109,14 @@ async def create_character_image_generation_task(
     character_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
     """为角色创建图片生成任务（对应 CharacterImage 业务）。
 
     - path 参数 character_id 为 Character.id
     - body.image_id 必须为该角色下的 CharacterImage.id
     """
+    await assert_entity_owned(db, entity_type="character", entity_id=character_id, current_user=current_user)
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(
@@ -1129,7 +1153,9 @@ async def render_character_image_prompt(
     character_id: str,
     body: StudioImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[RenderedPromptResponse]:
+    await assert_entity_owned(db, entity_type="character", entity_id=character_id, current_user=current_user)
     base = await _build_character_image_base_draft_service(
         db,
         character_id=character_id,
@@ -1150,8 +1176,10 @@ async def create_shot_frame_image_generation_task(
     shot_id: str,
     body: ShotFrameImageTaskRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
     """为镜头分镜帧图片生成任务（基于 `shot_id + frame_type` 自动定位数据）。"""
+    await assert_shot_owned(db, shot_id=shot_id, current_user=current_user)
     task_id = await _create_shot_frame_image_task_internal(
         db=db,
         shot_id=shot_id,
@@ -1175,7 +1203,9 @@ async def render_shot_frame_prompt(
     shot_id: str,
     body: ShotFramePromptRenderRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[RenderedShotFramePromptRead]:
+    await assert_shot_owned(db, shot_id=shot_id, current_user=current_user)
     prompt = (body.prompt or "").strip()
     if not prompt:
         raise HTTPException(

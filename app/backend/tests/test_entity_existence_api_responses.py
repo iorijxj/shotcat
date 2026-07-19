@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 from app.dependencies import get_db
 from app.main import app
 from app.services.studio.entities import StudioEntitiesService
+from tests.conftest import AlwaysOwnedGetMixin
 
 
-class _FakeDB:
+class _FakeDB(AlwaysOwnedGetMixin):
     pass
 
 

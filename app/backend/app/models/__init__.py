@@ -3,6 +3,7 @@
 from app.core.db import Base
 from app.models.base import TimestampMixin
 
+from app.models.auth import User
 from app.models.llm import Model, ModelSettings, Provider
 from app.models.task import GenerationTask
 from app.models.task_links import GenerationTaskLink
@@ -41,6 +42,7 @@ from app.models.studio import (
 __all__ = [
     "Base",
     "TimestampMixin",
+    "User",
     "Project",
     "Chapter",
     "Shot",

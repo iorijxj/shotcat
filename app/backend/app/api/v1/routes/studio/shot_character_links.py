@@ -5,9 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.schemas.common import ApiResponse, success_response
 from app.schemas.studio.cast import ShotCharacterLinkCreate, ShotCharacterLinkRead
+from app.services.auth.ownership import assert_chapter_owned, assert_shot_owned
 from app.services.studio.shot_character_links import (
     list_by_chapter,
     list_by_shot,
@@ -26,12 +28,15 @@ async def list_shot_character_links(
     shot_id: str | None = Query(None, description="镜头 ID（与 chapter_id 二选一）"),
     chapter_id: str | None = Query(None, description="章节 ID（批量查询整章镜头的角色关联）"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[list[ShotCharacterLinkRead]]:
     if bool(shot_id) == bool(chapter_id):
         raise HTTPException(status_code=400, detail="shot_id 与 chapter_id 必须提供且仅提供一个")
     if shot_id:
+        await assert_shot_owned(db, shot_id=shot_id, current_user=current_user)
         items = await list_by_shot(db, shot_id=shot_id)
     else:
+        await assert_chapter_owned(db, chapter_id=chapter_id, current_user=current_user)  # type: ignore[arg-type]
         items = await list_by_chapter(db, chapter_id=chapter_id)  # type: ignore[arg-type]
     return success_response([ShotCharacterLinkRead.model_validate(x) for x in items])
 
@@ -44,7 +49,9 @@ async def list_shot_character_links(
 async def upsert_shot_character_link(
     body: ShotCharacterLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ShotCharacterLinkRead]:
+    await assert_shot_owned(db, shot_id=body.shot_id, current_user=current_user)
     try:
         obj = await upsert(db, body=body)
     except ValueError as exc:

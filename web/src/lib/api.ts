@@ -1,8 +1,23 @@
 // 平台 后端 API 轻封装（dev 走 vite 代理 /api → :8000）
+import { getToken, logout } from './auth'
+
 const BASE = '/api/v1'
 
+// 统一挂 Authorization 头；401 时清本地 token 并广播登出事件（App.tsx 监听后切回登录页，
+// 纯 SPA 内重渲染，不做整页跳转）。
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = getToken()
+  const headers = { ...(init.headers as Record<string, string> | undefined), ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+  const r = await fetch(path.startsWith('http') || path.startsWith(BASE) ? path : BASE + path, { ...init, headers })
+  if (r.status === 401) {
+    logout()
+    window.dispatchEvent(new Event('duanju:logout'))
+  }
+  return r
+}
+
 async function get<T = any>(path: string): Promise<T> {
-  const r = await fetch(BASE + path)
+  const r = await authFetch(BASE + path)
   if (!r.ok) throw new Error(`GET ${path} ${r.status}`)
   const j = await r.json()
   return j.data ?? j
@@ -10,7 +25,7 @@ async function get<T = any>(path: string): Promise<T> {
 
 // POST：即使 4xx/5xx 也读出后端 message（{code,message,data}），失败抛带 message 的错误
 async function post<T = any>(path: string, body: any): Promise<T> {
-  const r = await fetch(BASE + path, {
+  const r = await authFetch(BASE + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -24,7 +39,7 @@ async function post<T = any>(path: string, body: any): Promise<T> {
 }
 
 async function patch<T = any>(path: string, body: any): Promise<T> {
-  const r = await fetch(BASE + path, {
+  const r = await authFetch(BASE + path, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -38,7 +53,7 @@ async function patch<T = any>(path: string, body: any): Promise<T> {
 }
 
 async function put<T = any>(path: string, body: any): Promise<T> {
-  const r = await fetch(BASE + path, {
+  const r = await authFetch(BASE + path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -137,11 +152,11 @@ export const api = {
     return post<Project>('/studio/projects', { id, description: '', ...body }).then(() => id)
   },
   deleteProject: (id: string) =>
-    fetch(`${BASE}/studio/projects/${id}`, { method: 'DELETE' }).then((r) => {
+    authFetch(`${BASE}/studio/projects/${id}`, { method: 'DELETE' }).then((r) => {
       if (!r.ok) throw new Error(`删除失败 ${r.status}`)
     }),
   updateProject: (id: string, patchBody: Partial<Project>) =>
-    fetch(`${BASE}/studio/projects/${id}`, {
+    authFetch(`${BASE}/studio/projects/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patchBody),
     }).then((r) => {
       if (!r.ok) throw new Error(`更新失败 ${r.status}`)
@@ -185,7 +200,7 @@ export const api = {
       return m
     }),
   updateShotDetail: (shotId: string, patch: Record<string, any>) =>
-    fetch(`${BASE}/studio/shot-details/${shotId}`, {
+    authFetch(`${BASE}/studio/shot-details/${shotId}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
     }).then((r) => { if (!r.ok) throw new Error(`保存失败 ${r.status}`) }),
   createChapter: (projectId: string, index: number, title: string, raw_text: string) =>
@@ -193,7 +208,7 @@ export const api = {
       id: `${projectId}_ch${String(index).padStart(2, '0')}`, project_id: projectId, index, title, raw_text,
     }),
   updateChapter: (id: string, raw_text: string) =>
-    fetch(`${BASE}/studio/chapters/${id}`, {
+    authFetch(`${BASE}/studio/chapters/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw_text }),
     }).then((r) => { if (!r.ok) throw new Error(`保存失败 ${r.status}`) }),
   entities: (type: string, projectId: string) =>
@@ -201,19 +216,19 @@ export const api = {
   entityUsageSummary: (type: string, projectId: string) =>
     get<EntityUsageSummary[]>(`/studio/entities/${type}/usage-summary?project_id=${projectId}`),
   updateEntity: (type: string, id: string, patch: Partial<Entity>) =>
-    fetch(`${BASE}/studio/entities/${type}/${id}`, {
+    authFetch(`${BASE}/studio/entities/${type}/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
     }).then((r) => { if (!r.ok) throw new Error(`更新失败 ${r.status}`) }),
   deleteEntity: async (type: string, id: string) => {
-    const r = await fetch(`${BASE}/studio/entities/${type}/${id}`, { method: 'DELETE' })
+    const r = await authFetch(`${BASE}/studio/entities/${type}/${id}`, { method: 'DELETE' })
     const j = await r.json().catch(() => null)
     if (!r.ok) throw new Error(j?.message || `删除失败 ${r.status}`)
     return (j?.data ?? j) as EntityDeleteResult
   },
   exportProjectKeyframes: (projectId: string) =>
-    fetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/keyframes/export`),
+    authFetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/keyframes/export`),
   exportProjectAssets: (projectId: string) =>
-    fetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/assets/export`),
+    authFetch(`${BASE}/studio/projects/${encodeURIComponent(projectId)}/assets/export`),
 
   // —— 画面生成链 ——
   frameImages: (shotId: string) =>

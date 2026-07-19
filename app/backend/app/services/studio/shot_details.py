@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_order, paginate
-from app.models.studio import Scene, Shot, ShotDetail
+from app.models.studio import Chapter, Project, Scene, Shot, ShotDetail
 from app.schemas.common import ApiResponse, PaginatedData, paginated_response
 from app.schemas.studio.shots import ShotDetailCreate, ShotDetailRead, ShotDetailUpdate
 from app.services.common import (
@@ -33,11 +33,20 @@ async def list_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
+    owner_id: str | None = None,
 ) -> ApiResponse[PaginatedData[ShotDetailRead]]:
-    """分页查询镜头细节。"""
+    """分页查询镜头细节。owner_id 非空时限定为该用户拥有项目下的镜头（跨用户隔离）。"""
     stmt = select(ShotDetail)
     if shot_id is not None:
         stmt = stmt.where(ShotDetail.id == shot_id)
+    if owner_id is not None:
+        owned_shot_ids = (
+            select(Shot.id)
+            .join(Chapter, Shot.chapter_id == Chapter.id)
+            .join(Project, Chapter.project_id == Project.id)
+            .where(Project.owner_id == owner_id)
+        )
+        stmt = stmt.where(ShotDetail.id.in_(owned_shot_ids))
     stmt = apply_order(
         stmt,
         model=ShotDetail,

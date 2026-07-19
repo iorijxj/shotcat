@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
 from app.schemas.studio import FileDetailRead, FileRead, FileUpdate
+from app.services.auth.ownership import assert_file_owned, assert_project_owned
 from app.services.studio.file_usages import list_files_by_scope_paginated
 from app.services.studio.files import (
     build_download_response,
     delete_file,
     get_file_detail as get_file_detail_service,
     get_storage_info,
-    list_files_paginated,
     update_file_meta as update_file_meta_service,
     upload_file,
 )
@@ -28,47 +29,33 @@ router = APIRouter()
 )
 async def list_files_api(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     q: str | None = Query(None, description="关键字，过滤 name"),
     order: str | None = Query(None),
     is_desc: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
-    project_id: str | None = Query(None, description="按 file_usages 限定项目；提供后仅返回该项目下有关联记录的文件"),
+    project_id: str = Query(..., min_length=1, description="按 file_usages 限定项目（必填，仅返回该项目下有关联记录的文件）"),
     chapter_title: str | None = Query(None, description="章节标题（精确匹配，与 project_id 联用）"),
     shot_title: str | None = Query(None, description="镜头标题（精确匹配，与 project_id 联用）"),
 ) -> ApiResponse[PaginatedData[FileRead]]:
-    if chapter_title is not None or shot_title is not None:
-        if not project_id:
-            raise HTTPException(
-                status_code=400,
-                detail="project_id is required when chapter_title or shot_title is set",
-            )
-
-    if project_id is not None:
-        items, total = await list_files_by_scope_paginated(
-            db,
-            project_id=project_id,
-            chapter_title=chapter_title,
-            shot_title=shot_title,
-            q=q,
-            order=order,
-            is_desc=is_desc,
-            page=page,
-            page_size=page_size,
-        )
-        return paginated_response(
-            [FileRead.model_validate(x) for x in items],
-            page=page,
-            page_size=page_size,
-            total=total,
-        )
-    return await list_files_paginated(
+    await assert_project_owned(db, project_id=project_id, current_user=current_user)
+    items, total = await list_files_by_scope_paginated(
         db,
+        project_id=project_id,
+        chapter_title=chapter_title,
+        shot_title=shot_title,
         q=q,
         order=order,
         is_desc=is_desc,
         page=page,
         page_size=page_size,
+    )
+    return paginated_response(
+        [FileRead.model_validate(x) for x in items],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 
@@ -82,12 +69,15 @@ async def upload_file_api(
     file: UploadFile = File(..., description="要上传的二进制文件"),
     name: str | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     project_id: str | None = Form(None, description="可选：写入 file_usages 的项目 ID"),
     chapter_id: str | None = Form(None),
     shot_id: str | None = Form(None),
     usage_kind: str | None = Form(None, description="与 project_id 同时提供时写入 file_usages"),
     source_ref: str | None = Form(None),
 ) -> ApiResponse[FileRead]:
+    if project_id:
+        await assert_project_owned(db, project_id=project_id, current_user=current_user)
     obj = await upload_file(
         db,
         file=file,
@@ -108,7 +98,9 @@ async def upload_file_api(
 async def download_file_api(
     file_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    await assert_file_owned(db, file_id=file_id, current_user=current_user)
     return await build_download_response(db, file_id=file_id)
 
 
@@ -120,7 +112,9 @@ async def download_file_api(
 async def get_file_storage_info_api(
     file_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[dict]:
+    await assert_file_owned(db, file_id=file_id, current_user=current_user)
     return success_response(await get_storage_info(db, file_id=file_id))
 
 
@@ -132,7 +126,9 @@ async def get_file_storage_info_api(
 async def get_file_detail(
     file_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[FileDetailRead]:
+    await assert_file_owned(db, file_id=file_id, current_user=current_user)
     return success_response(await get_file_detail_service(db, file_id=file_id))
 
 
@@ -145,7 +141,9 @@ async def update_file_meta(
     file_id: str,
     body: FileUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[FileRead]:
+    await assert_file_owned(db, file_id=file_id, current_user=current_user)
     obj = await update_file_meta_service(db, file_id=file_id, body=body)
     return success_response(FileRead.model_validate(obj))
 
@@ -158,6 +156,8 @@ async def update_file_meta(
 async def delete_file_api(
     file_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    await assert_file_owned(db, file_id=file_id, current_user=current_user)
     await delete_file(db, file_id=file_id)
     return empty_response()

@@ -9,12 +9,10 @@ from fastapi.testclient import TestClient
 from app.api.v1.routes.studio import image_tasks as route
 from app.dependencies import get_db
 from app.main import app
+from tests.conftest import AlwaysOwnedGetMixin
 
 
-class _DummyDB:
-    async def get(self, *_args, **_kwargs):
-        return None
-
+class _DummyDB(AlwaysOwnedGetMixin):
     async def execute(self, *_args, **_kwargs):
         class _Result:
             def scalars(self):
@@ -203,7 +201,7 @@ def test_create_shot_frame_image_task_renders_prompt_before_submit(client: TestC
         async def get(self, model, ident):
             if getattr(model, "__name__", "") == "ShotDetail" and ident == "shot-1":
                 return object()
-            return None
+            return await super().get(model, ident)
 
     db = _ShotDetailDB()
 

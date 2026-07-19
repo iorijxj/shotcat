@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_db
 from app.main import app
+from tests.conftest import TEST_USER_ID
 from app.models.studio import (
     Chapter,
     ChapterStatus,
@@ -97,6 +98,7 @@ def _seed_project(db: _FakeStudioDB, project_id: str = "proj-1") -> Project:
         unify_style=True,
         progress=10,
         stats={},
+        owner_id=TEST_USER_ID,
     )
     obj.created_at = now
     obj.updated_at = now
@@ -273,6 +275,8 @@ def test_create_chapter_returns_created_envelope(client: TestClient) -> None:
 
 
 def test_create_chapter_missing_project_returns_api_response(client: TestClient) -> None:
+    # project_id 现在走归属校验（assert_project_owned）：不存在或不属于当前用户统一 404，
+    # 不再是路由内部单独的"项目不存在"400 校验（避免用状态码区分暴露资源是否存在）。
     db = _FakeStudioDB()
     app.dependency_overrides[get_db] = _override_db(db)
     try:
@@ -293,8 +297,8 @@ def test_create_chapter_missing_project_returns_api_response(client: TestClient)
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "Project not found", "data": None, "meta": None}
+    assert response.status_code == 404
+    assert response.json() == {"code": 404, "message": "Project not found", "data": None, "meta": None}
 
 
 def test_get_chapter_not_found_returns_api_response(client: TestClient) -> None:

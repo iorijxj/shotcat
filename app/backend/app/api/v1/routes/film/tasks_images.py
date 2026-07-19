@@ -3,9 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.task_manager import DeliveryMode, SqlAlchemyTaskStore, TaskManager
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.task_links import GenerationTaskLink
 from app.schemas.common import ApiResponse, created_response
+from app.services.auth.ownership import assert_shot_owned
 from app.services.film.shot_frame_prompt_tasks import (
     build_run_args as build_shot_frame_prompt_run_args,
     normalize_frame_type,
@@ -31,7 +33,9 @@ router = APIRouter()
 async def create_shot_frame_prompt_task(
     body: ShotFramePromptRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCreated]:
+    await assert_shot_owned(db, shot_id=body.shot_id, current_user=current_user)
     frame_type = normalize_frame_type(body.frame_type)
     relation_type = relation_type_for_frame(frame_type)
 

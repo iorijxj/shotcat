@@ -4,24 +4,80 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 try:
     from app.main import app  # type: ignore
+    from app.dependencies import get_current_user
+    from app.models.auth import User
 except Exception:  # noqa: BLE001
     # 测试环境里有些可选依赖（例如 langgraph）可能未安装。
     # 不要让整个测试套件在导入 conftest 时直接失败；仅在需要 client 的测试里跳过。
     app = None
+    get_current_user = None
+    User = None
+
+
+# 除跨用户越权测试外，其余 *_api_responses 测试只关心响应壳/业务逻辑，不关心鉴权语义，
+# 统一伪造一个登录用户，各测试文件的 Fake DB 里凡是需要归属校验通过的 Project，
+# owner_id 都应设为这个 id（见各文件 _seed_project 之类的 helper）。
+TEST_USER_ID = "test-user"
+
+
+class AlwaysOwnedGetMixin:
+    """给不关心归属校验细节、只测响应壳/业务逻辑的 Fake DB 提供通用 get()。
+
+    Shot/Chapter/Project 之间自动串成属于 TEST_USER_ID 的链条（不管传入的 id 是什么），
+    让 app.services.auth.ownership 里的 assert_*_owned 直接放行，不用逐个测试文件手动
+    维护真实的项目/章节/镜头归属数据。仅用于"测别的、不测越权"的既有测试；跨用户越权
+    行为本身的测试见 test_project_ownership.py，那边用真实的 owner_id 精确断言。
+    """
+
+    async def get(self, model, entity_id):  # noqa: ANN001
+        from app.models.studio import (
+            Actor,
+            Chapter,
+            Character,
+            Costume,
+            Project,
+            Prop,
+            Scene,
+            Shot,
+            ShotExtractedCandidate,
+            ShotExtractedDialogueCandidate,
+        )
+
+        if model is Project:
+            return SimpleNamespace(id=entity_id, owner_id=TEST_USER_ID)
+        if model is Chapter:
+            return SimpleNamespace(id=entity_id, project_id=f"{entity_id}::project")
+        if model is Shot:
+            return SimpleNamespace(id=entity_id, chapter_id=f"{entity_id}::chapter")
+        if model in {ShotExtractedCandidate, ShotExtractedDialogueCandidate}:
+            return SimpleNamespace(id=entity_id, shot_id="shot-1")
+        if model in {Character, Scene, Prop, Costume, Actor}:
+            # 测试里不关心这几类可空 project_id 资产的归属，一律当公共资产放行。
+            return SimpleNamespace(id=entity_id, project_id=None)
+        return None
 
 
 @pytest.fixture
 def client() -> TestClient:
-    """FastAPI 应用 TestClient，用于集成测试。"""
+    """FastAPI 应用 TestClient，用于集成测试。默认已登录（见 TEST_USER_ID）。"""
     if app is None:
         pytest.skip("FastAPI app 依赖未满足（例如缺少 langgraph），跳过需要 client 的集成测试。")
-    return TestClient(app)
+
+    async def _fake_current_user() -> User:
+        return User(id=TEST_USER_ID, username="test", password_hash="x")
+
+    app.dependency_overrides[get_current_user] = _fake_current_user
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def pytest_configure(config: pytest.Config) -> None:

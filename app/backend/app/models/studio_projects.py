@@ -24,6 +24,13 @@ class Project(Base, TimestampMixin):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, comment="项目 ID")
+    owner_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="所属用户 ID（迁移期兼容可为空，上线后需回填存量数据）",
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False, comment="项目名称")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="项目简介")
     style: Mapped[ProjectStyle] = mapped_column(String(32), nullable=False, comment="题材/风格")

@@ -7,19 +7,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.studio import Chapter, Project, Shot
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
+from app.services.auth.ownership import assert_project_owned, require_project_access_via_chapter
 from app.services.common import (
     create_and_refresh,
-    delete_if_exists,
     entity_already_exists,
-    entity_not_found,
     ensure_not_exists,
     flush_and_refresh,
-    get_or_404,
     patch_model,
-    require_entity,
 )
 from app.schemas.studio.projects import ChapterCreate, ChapterRead, ChapterUpdate
 
@@ -35,6 +33,7 @@ CHAPTER_ORDER_FIELDS = {"index", "title", "created_at", "updated_at", "storyboar
 )
 async def list_chapters(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     project_id: str | None = Query(None, description="按项目过滤"),
     q: str | None = Query(None, description="关键字，过滤 title/summary"),
     order: str | None = Query(None, description="排序字段"),
@@ -44,7 +43,11 @@ async def list_chapters(
 ) -> ApiResponse[PaginatedData[ChapterRead]]:
     stmt = select(Chapter)
     if project_id:
+        await assert_project_owned(db, project_id=project_id, current_user=current_user)
         stmt = stmt.where(Chapter.project_id == project_id)
+    else:
+        owned_project_ids = select(Project.id).where(Project.owner_id == current_user.id)
+        stmt = stmt.where(Chapter.project_id.in_(owned_project_ids))
     stmt = apply_keyword_filter(stmt, q=q, fields=[Chapter.title, Chapter.summary])
     stmt = apply_order(
         stmt,
@@ -87,6 +90,7 @@ async def list_chapters(
 async def create_chapter(
     body: ChapterCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ChapterRead]:
     await ensure_not_exists(
         db,
@@ -94,13 +98,7 @@ async def create_chapter(
         body.id,
         detail=entity_already_exists("Chapter"),
     )
-    await require_entity(
-        db,
-        Project,
-        body.project_id,
-        detail=entity_not_found("Project"),
-        status_code=400,
-    )
+    await assert_project_owned(db, project_id=body.project_id, current_user=current_user)
     obj = await create_and_refresh(db, Chapter(**body.model_dump()))
     return created_response(ChapterRead.model_validate(obj))
 
@@ -113,8 +111,8 @@ async def create_chapter(
 async def get_chapter(
     chapter_id: str,
     db: AsyncSession = Depends(get_db),
+    obj: Chapter = Depends(require_project_access_via_chapter),
 ) -> ApiResponse[ChapterRead]:
-    obj = await get_or_404(db, Chapter, chapter_id, detail=entity_not_found("Chapter"))
     count_stmt = select(func.count(Shot.id)).where(Shot.chapter_id == chapter_id)
     res = await db.execute(count_stmt)
     shot_count = int(res.scalar() or 0)
@@ -130,17 +128,12 @@ async def update_chapter(
     chapter_id: str,
     body: ChapterUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    obj: Chapter = Depends(require_project_access_via_chapter),
 ) -> ApiResponse[ChapterRead]:
-    obj = await get_or_404(db, Chapter, chapter_id, detail=entity_not_found("Chapter"))
     update = body.model_dump(exclude_unset=True)
     if "project_id" in update:
-        await require_entity(
-            db,
-            Project,
-            update["project_id"],
-            detail=entity_not_found("Project"),
-            status_code=400,
-        )
+        await assert_project_owned(db, project_id=update["project_id"], current_user=current_user)
     patch_model(obj, update)
     await flush_and_refresh(db, obj)
     return success_response(ChapterRead.model_validate(obj))
@@ -154,6 +147,8 @@ async def update_chapter(
 async def delete_chapter(
     chapter_id: str,
     db: AsyncSession = Depends(get_db),
+    obj: Chapter = Depends(require_project_access_via_chapter),
 ) -> ApiResponse[None]:
-    await delete_if_exists(db, Chapter, chapter_id)
+    await db.delete(obj)
+    await db.flush()
     return empty_response()

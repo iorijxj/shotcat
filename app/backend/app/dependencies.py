@@ -2,11 +2,14 @@
 
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, HTTPException
+import jwt
+from fastapi import Depends, Header, HTTPException, status
 from langchain_core.language_models.chat_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import async_session_maker
+from app.models.auth import User
+from app.services.auth.security import decode_access_token
 from app.services.llm.resolver import build_default_text_llm
 
 
@@ -21,6 +24,24 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+async def get_current_user(
+    authorization: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """解析 Authorization: Bearer <token>，返回当前登录用户；缺失/无效/过期一律 401。"""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id = decode_access_token(token)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
 
 
 async def get_llm(db: AsyncSession = Depends(get_db)) -> BaseChatModel:

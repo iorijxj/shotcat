@@ -11,9 +11,10 @@ from app.api.v1.routes.studio import shot_character_links as route
 from app.dependencies import get_db
 from app.main import app
 from app.models.studio import ShotCharacterLink
+from tests.conftest import AlwaysOwnedGetMixin
 
 
-class _DummyDB:
+class _DummyDB(AlwaysOwnedGetMixin):
     pass
 
 

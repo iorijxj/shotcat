@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.models.studio import Character, ShotDetail, ShotDialogLine
+from app.models.studio import Chapter, Character, Project, Shot, ShotDetail, ShotDialogLine
 from app.schemas.common import ApiResponse, PaginatedData, paginated_response
 from app.schemas.studio.shots import ShotDialogLineCreate, ShotDialogLineRead, ShotDialogLineUpdate
 from app.services.studio.shot_extracted_dialogue_candidates import mark_pending_by_linked_dialog_line
@@ -31,11 +31,20 @@ async def list_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
+    owner_id: str | None = None,
 ) -> ApiResponse[PaginatedData[ShotDialogLineRead]]:
-    """分页查询镜头对白。"""
+    """分页查询镜头对白。owner_id 非空时限定为该用户拥有项目下的镜头（跨用户隔离）。"""
     stmt = select(ShotDialogLine)
     if shot_detail_id is not None:
         stmt = stmt.where(ShotDialogLine.shot_detail_id == shot_detail_id)
+    if owner_id is not None:
+        owned_shot_ids = (
+            select(Shot.id)
+            .join(Chapter, Shot.chapter_id == Chapter.id)
+            .join(Project, Chapter.project_id == Project.id)
+            .where(Project.owner_id == owner_id)
+        )
+        stmt = stmt.where(ShotDialogLine.shot_detail_id.in_(owned_shot_ids))
     stmt = apply_keyword_filter(stmt, q=q, fields=[ShotDialogLine.text])
     stmt = apply_order(
         stmt,

@@ -33,8 +33,10 @@ from app.chains.agents.script_processing_agents import (
     ScriptSimplificationResult,
     StudioScriptExtractionDraft,
 )
-from app.dependencies import get_db, get_llm, get_nothinking_llm
+from app.dependencies import get_current_user, get_db, get_llm, get_nothinking_llm
+from app.models.auth import User
 from app.schemas.common import ApiResponse, success_response
+from app.services.auth.ownership import assert_chapter_owned, assert_project_owned
 from app.schemas.skills.character_portrait import CharacterPortraitAnalysisResult
 from app.schemas.skills.costume_info_analysis import CostumeInfoAnalysisResult
 from app.schemas.skills.prop_info_analysis import PropInfoAnalysisResult
@@ -110,9 +112,11 @@ class ScriptDividerRequest(BaseModel):
 async def divide_script_async(
     request: ScriptDividerRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[AsyncTaskCreateRead]:
     if not request.chapter_id:
         raise HTTPException(status_code=400, detail=required_field("chapter_id", when="divide-async"))
+    await assert_chapter_owned(db, chapter_id=request.chapter_id, current_user=current_user)
 
     task_info = await create_divide_task(
         db,
@@ -149,6 +153,7 @@ async def divide_script(
     request: ScriptDividerRequest,
     llm: BaseChatModel = Depends(get_nothinking_llm),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ScriptDivisionResult]:
     """
     将完整剧本文本自动分割为多个镜头。
@@ -168,6 +173,7 @@ async def divide_script(
         if request.write_to_db:
             if not request.chapter_id:
                 raise HTTPException(status_code=400, detail=required_field("chapter_id", when="write_to_db=true"))
+            await assert_chapter_owned(db, chapter_id=request.chapter_id, current_user=current_user)
             await write_division_result_to_chapter(
                 db,
                 chapter_id=request.chapter_id,
@@ -946,7 +952,9 @@ class ScriptExtractRequest(BaseModel):
 async def extract_script_async(
     request: ScriptExtractRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[AsyncTaskCreateRead]:
+    await assert_project_owned(db, project_id=request.project_id, current_user=current_user)
     task_info = await create_extract_task(
         db,
         project_id=request.project_id,
@@ -979,7 +987,9 @@ async def extract_script(
     request: ScriptExtractRequest,
     llm: BaseChatModel = Depends(get_nothinking_llm),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[StudioScriptExtractionDraft]:
+    await assert_project_owned(db, project_id=request.project_id, current_user=current_user)
     try:
         cache_key = build_script_extract_cache_key(
             project_id=request.project_id,

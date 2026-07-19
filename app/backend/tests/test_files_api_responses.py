@@ -19,6 +19,14 @@ class _DummyDB:
     async def get(self, *_args, **_kwargs):
         return None
 
+    async def execute(self, *_args, **_kwargs):
+        # 归属校验里 file_usages 查询在这批测试里恒为空（视为公共/未落库使用记录），放行。
+        class _EmptyResult:
+            def all(self) -> list[tuple]:
+                return []
+
+        return _EmptyResult()
+
     async def delete(self, *_args, **_kwargs) -> None:
         return None
 
@@ -40,6 +48,8 @@ def _override_db(db: _DummyDB):
 
 
 def test_list_files_requires_project_id_when_scope_filters_set(client: TestClient) -> None:
+    # project_id 现在是接口级必填参数（跨用户隔离需要），缺失时由 FastAPI 自身校验拦截为 422，
+    # 不再是路由内部的业务级 400（旧的"project_id 与 chapter_title/shot_title 联动"检查已随之作废）。
     db = _DummyDB()
     app.dependency_overrides[get_db] = _override_db(db)
     try:
@@ -47,13 +57,10 @@ def test_list_files_requires_project_id_when_scope_filters_set(client: TestClien
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "code": 400,
-        "message": "project_id is required when chapter_title or shot_title is set",
-        "data": None,
-        "meta": None,
-    }
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == 422
+    assert "project_id" in body["message"]
 
 
 def test_get_file_detail_not_found_returns_api_response(client: TestClient, monkeypatch) -> None:
