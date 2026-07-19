@@ -158,7 +158,11 @@ services:
         condition: service_completed_successfully
     command: ["uv", "run", "celery", "-A", "app.core.celery_app:celery_app", "worker", "-l", "info"]
 
+  # 旧 Studio 管理前端，已降级为历史遗留维护通道，不再是产品界面
+  # （日常入口见 web/）。profiles 让它不随裸 `docker compose up` 启动；
+  # 需要维护时手动 `docker compose --profile legacy up -d --build front`。
   front:
+    profiles: ["legacy"]
     restart: unless-stopped
     build:
       context: ../..

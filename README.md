@@ -110,13 +110,6 @@ python pipeline_server.py
 
 ## 开发与验证
 
-前端类型检查：
-
-```bash
-cd app/front
-pnpm run typecheck
-```
-
 后端测试：
 
 ```bash
@@ -124,7 +117,16 @@ cd app/backend
 uv run pytest -q
 ```
 
-后端 API 变更后需要同步前端 OpenAPI 客户端：
+以下两步只在维护 `app/front`（旧 Studio 界面，见"统一入口与数据"一节）时需要，日常基于 `web/` 的开发不需要执行：
+
+前端类型检查：
+
+```bash
+cd app/front
+pnpm run typecheck
+```
+
+后端 API 变更后同步 `app/front` 的 OpenAPI 客户端：
 
 ```bash
 cd app/front

@@ -3,11 +3,13 @@ setlocal enabledelayedexpansion
 
 REM ============================================================
 REM shotcat - server.bat
-REM One-click headless startup: brings up the full docker compose
-REM stack (mysql, redis, rustfs, backend, celery-worker, front), builds
-REM and serves the web/ workbench, and starts bridge/pipeline_server.py --
-REM all in the background so the app is reachable over the network
-REM without running any local frontend dev process.
+REM One-click headless startup: brings up the docker compose stack
+REM (mysql, redis, rustfs, backend, celery-worker -- app/front is legacy
+REM and stays behind the "legacy" compose profile, not started here),
+REM builds and serves the web/ workbench, and starts
+REM bridge/pipeline_server.py -- all in the background so the app is
+REM reachable over the network without running any local frontend dev
+REM process.
 REM ============================================================
 
 set "ROOT=%~dp0"
@@ -47,25 +49,28 @@ if errorlevel 1 (
 )
 
 REM Read the actual published ports from .env. These are deliberately
-REM different from test.bat/run.bat's native dev ports (8000/7788) so the
+REM different from test.bat/run.bat's native dev ports (8000/5273) so the
 REM two modes can never fight over the same port.
 for /f "usebackq tokens=1,2 delims==" %%A in ("%COMPOSE_ENV%") do (
     set "key=%%A"
     if not "!key:~0,1!"=="#" if not "%%A"=="" set "%%A=%%B"
 )
 if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
-if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
-REM web/ is the day-to-day shotcat workbench (casting/shots/keyframes),
-REM a separate Vite app from app/front (the platform's own Studio admin
-REM UI). It has no internal Docker port -- Caddy serves its static build
-REM directly, so there is no *_INTERNAL_PORT counterpart for it below.
+REM web/ is the day-to-day shotcat workbench (casting/shots/keyframes) and
+REM the only frontend this script exposes. app/front (the platform's own
+REM Studio admin UI) is legacy-maintenance-only (see the 2026-07-19
+REM frontend consolidation doc under docs/):
+REM its docker-compose service is behind the "legacy" profile, so the
+REM `docker compose up -d --build` below never starts it, and this script
+REM does not open a LAN-facing port or Caddy route for it. web/ has no
+REM internal Docker port -- Caddy serves its static build directly, so
+REM there is no *_INTERNAL_PORT counterpart for it below.
 if not defined SERVER_WEB_PORT set "SERVER_WEB_PORT=18081"
 REM Internal ports: what the containers publish on 127.0.0.1. These MUST
 REM differ from the public ports above -- WSL2 mirrored networking tracks
 REM bound ports machine-wide by port number, and reusing the same number
 REM for the portproxy listener makes LAN-facing connections get refused.
 if not defined SERVER_BACKEND_INTERNAL_PORT set "SERVER_BACKEND_INTERNAL_PORT=28000"
-if not defined SERVER_FRONT_INTERNAL_PORT set "SERVER_FRONT_INTERNAL_PORT=28080"
 
 REM Docker Desktop is not allowed here; the stack runs via Docker Engine
 REM inside WSL2 (set up by install.bat).
@@ -134,7 +139,7 @@ if not exist "%ROOT%tools\caddy.exe" (
 
 REM Legacy cleanup (earlier versions used netsh portproxy on these ports),
 REM plus the firewall openings for the public ports.
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
+for %%P in (!SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
     netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
     netsh advfirewall firewall show rule name="shotcat-server-%%P" >nul 2>&1
     if errorlevel 1 (
@@ -148,9 +153,6 @@ set "CADDYFILE=%TEMP%\shotcat-caddyfile"
 >>"%CADDYFILE%" echo     auto_https off
 >>"%CADDYFILE%" echo     admin off
 >>"%CADDYFILE%" echo }
->>"%CADDYFILE%" echo :!SERVER_FRONT_PORT! {
->>"%CADDYFILE%" echo     reverse_proxy !CONNECT_ADDR!:!SERVER_FRONT_INTERNAL_PORT!
->>"%CADDYFILE%" echo }
 >>"%CADDYFILE%" echo :!SERVER_BACKEND_PORT! {
 >>"%CADDYFILE%" echo     reverse_proxy !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
 >>"%CADDYFILE%" echo }
@@ -160,12 +162,23 @@ REM path-routes those two prefixes instead of a single blanket proxy.
 REM try_files falls back to index.html for anything else -- web/ uses
 REM react-router's BrowserRouter (history mode), so a bare file_server
 REM would 404 on refreshing any deep client-side route.
+REM The "route { }" wrapper is required, not cosmetic: Caddy reorders
+REM bare top-level directives by its own fixed category order, and
+REM try_files' fallback to /index.html always matches (the file always
+REM exists), so without "route" it runs before reverse_proxy ever sees
+REM the original path -- every /api/* and /pipeline/* request silently
+REM falls through to file_server instead (GET gets index.html's HTML
+REM back instead of JSON, POST/PUT/DELETE get a bare 405 since
+REM file_server only serves GET/HEAD). "route" forces this block to
+REM run in the exact order written below.
 >>"%CADDYFILE%" echo :!SERVER_WEB_PORT! {
 >>"%CADDYFILE%" echo     root * "!ROOT!web\dist"
->>"%CADDYFILE%" echo     reverse_proxy /api/* !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
->>"%CADDYFILE%" echo     reverse_proxy /pipeline/* 127.0.0.1:5280
->>"%CADDYFILE%" echo     try_files {path} /index.html
->>"%CADDYFILE%" echo     file_server
+>>"%CADDYFILE%" echo     route {
+>>"%CADDYFILE%" echo         reverse_proxy /api/* !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
+>>"%CADDYFILE%" echo         reverse_proxy /pipeline/* 127.0.0.1:5280
+>>"%CADDYFILE%" echo         try_files {path} /index.html
+>>"%CADDYFILE%" echo         file_server
+>>"%CADDYFILE%" echo     }
 >>"%CADDYFILE%" echo }
 REM Loopback-only: bridge/*.py (incl. pipeline_server.py) hardcode
 REM http://localhost:8000 as their backend base URL. The docker backend
@@ -204,9 +217,9 @@ REM instead of being discovered later from another machine. Any HTTP
 REM status (even 404) counts as OK -- only 000 means the connection failed.
 set "SELFCHECK_FAIL="
 echo [server] self-check 1/2: containers on internal ports ^(via !CONNECT_ADDR!^)...
-for %%P in (!SERVER_FRONT_INTERNAL_PORT! !SERVER_BACKEND_INTERNAL_PORT!) do call :probe_port !CONNECT_ADDR! %%P
+for %%P in (!SERVER_BACKEND_INTERNAL_PORT!) do call :probe_port !CONNECT_ADDR! %%P
 echo [server] self-check 2/2: full chain through the reverse proxy...
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do call :probe_port 127.0.0.1 %%P
+for %%P in (!SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do call :probe_port 127.0.0.1 %%P
 
 if defined SELFCHECK_FAIL (
     echo [server] === stack started but the self-check FAILED, LAN access will not work until this is fixed ===
@@ -214,8 +227,8 @@ if defined SELFCHECK_FAIL (
 )
 echo [server] === full stack is up, self-check passed ===
 echo [server] workbench ^(web/, day-to-day use^): http://localhost:%SERVER_WEB_PORT%
-echo [server] Studio admin ^(app/front^): http://localhost:%SERVER_FRONT_PORT%
 echo [server] backend docs: http://localhost:%SERVER_BACKEND_PORT%/docs
+echo [server] app/front ^(legacy Studio, not started/exposed by default^): docker compose --profile legacy up -d --build front
 echo [server] other machines on the same network can reach it via this host's LAN IP on the same ports.
 
 :end

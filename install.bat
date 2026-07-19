@@ -12,7 +12,7 @@ REM ============================================================
 set "ROOT=%~dp0"
 set "APP_DIR=%ROOT%app"
 set "BACKEND_DIR=%APP_DIR%\backend"
-set "FRONT_DIR=%APP_DIR%\front"
+set "WEB_DIR=%ROOT%web"
 set "COMPOSE_DIR=%APP_DIR%\deploy\compose"
 set "COMPOSE_FILE=%COMPOSE_DIR%\docker-compose.yml"
 set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
@@ -168,7 +168,7 @@ if not exist "%BACKEND_DIR%\.env" (
         echo REDIS_HOST=localhost
         echo REDIS_PORT=!REDIS_PORT!
         echo REDIS_DB=0
-        echo CORS_ORIGINS=http://localhost:7788,http://127.0.0.1:7788
+        echo CORS_ORIGINS=http://localhost:5273,http://127.0.0.1:5273
         echo S3_ENDPOINT_URL=http://localhost:!RUSTFS_PORT!
         echo S3_REGION_NAME=us-east-1
         echo S3_ACCESS_KEY_ID=!RUSTFS_ACCESS_KEY!
@@ -261,8 +261,12 @@ for %%F in ("%BACKEND_DIR%\sql\*.sql") do (
 )
 
 REM ---- 5. Frontend deps ----
-echo [install] installing frontend dependencies ^(pnpm install^)...
-pushd "%FRONT_DIR%"
+REM web/ is the only frontend these scripts manage day-to-day (app/front is
+REM legacy-maintenance-only, see the 2026-07-19 frontend consolidation doc
+REM under docs/); it is never
+REM installed or pre-built here -- maintain it manually if ever needed.
+echo [install] installing frontend dependencies ^(pnpm install, web/^)...
+pushd "%WEB_DIR%"
 call pnpm install
 if errorlevel 1 (
     echo [install] pnpm install failed
@@ -272,8 +276,8 @@ if errorlevel 1 (
 popd
 
 REM ---- 6. Pre-build docker images used by server.bat ----
-echo [install] pre-building docker images for server.bat ^(backend/celery/front^)...
-%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" build backend celery-worker front
+echo [install] pre-building docker images for server.bat ^(backend/celery^)...
+%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" build backend celery-worker
 
 echo [install] === setup complete. You can now run test.bat / run.bat / server.bat ===
 echo [install] note: server.bat needs to be run as Administrator ^(it opens LAN-facing ports via netsh^).

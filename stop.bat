@@ -4,10 +4,11 @@ setlocal enabledelayedexpansion
 REM ============================================================
 REM shotcat - stop.bat
 REM Stops everything started by test.bat, run.bat and server.bat:
-REM the tagged local terminal windows (backend/front processes)
-REM and the docker compose stack. Only kills windows carrying the
-REM exact shotcat window-title tags, so unrelated terminals and
-REM processes are left untouched.
+REM the tagged local terminal windows (backend/web processes) and
+REM the docker compose stack. Only kills windows carrying the exact
+REM shotcat window-title tags, so unrelated terminals and processes
+REM are left untouched. app/front (legacy Studio) is started
+REM manually outside these scripts, so it is not tracked here.
 REM ============================================================
 
 set "ROOT=%~dp0"
@@ -19,7 +20,7 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 echo [stop] === stopping shotcat services (test.bat / run.bat / server.bat) ===
 
 echo [stop] closing tagged windows from test.bat / run.bat / server.bat...
-for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "shotcat-front-run" "shotcat-caddy" "shotcat-wsl-keepalive" "shotcat-pipeline") do (
+for %%T in ("shotcat-backend-test" "shotcat-web-test" "shotcat-backend-run" "shotcat-web-run" "shotcat-caddy" "shotcat-wsl-keepalive" "shotcat-pipeline") do (
     taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 
@@ -27,15 +28,15 @@ REM uv run uvicorn --reload / vite dev can leave an orphaned child process
 REM behind even after the parent window is killed (the reload supervisor
 REM forks a separate worker). Belt-and-suspenders: also reclaim the actual
 REM ports directly so a leftover process can't keep them occupied.
-echo [stop] force-killing any leftover process still bound to 8000/7788...
-for %%P in (8000 7788) do (
+echo [stop] force-killing any leftover process still bound to 8000/5273...
+for %%P in (8000 5273) do (
     for /f "tokens=5" %%I in ('netstat -ano ^| findstr /r /c:":%%P .*LISTENING"') do (
         echo [stop] killing leftover PID %%I on port %%P
         taskkill /F /PID %%I >nul 2>&1
     )
 )
 
-echo [stop] stopping docker compose containers ^(mysql/redis/rustfs/backend/celery-worker/front^)...
+echo [stop] stopping docker compose containers ^(mysql/redis/rustfs/backend/celery-worker^)...
 if exist "%COMPOSE_ENV%" (
     for /f "delims=" %%W in ('wsl -- wslpath -a "%ROOT:~0,-1%"') do set "WSL_ROOT=%%W"
     set "WSL_COMPOSE_DIR=!WSL_ROOT!/app/deploy/compose"
@@ -52,14 +53,13 @@ if exist "%COMPOSE_ENV%" (
     )
 )
 if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
-if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
 if not defined SERVER_WEB_PORT set "SERVER_WEB_PORT=18081"
 
 net session >nul 2>&1
 if errorlevel 1 (
-    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports %SERVER_FRONT_PORT%/%SERVER_BACKEND_PORT%/%SERVER_WEB_PORT%. Re-run stop.bat as Administrator if server.bat was used.
+    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports %SERVER_BACKEND_PORT%/%SERVER_WEB_PORT%. Re-run stop.bat as Administrator if server.bat was used.
 ) else (
-    for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
+    for %%P in (!SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
         netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
         netsh advfirewall firewall delete rule name="shotcat-server-%%P" >nul 2>&1
     )
