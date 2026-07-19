@@ -29,7 +29,6 @@ export default function Frames({ project }: { project: Project | null }) {
   const [scenes, setScenes] = useState<Entity[]>([])
   const [lb, setLb] = useState<string | null>(null)
   const [detail, setDetail] = useState<any>(null) // 镜头详情(含真实关键帧提示词)
-  const [renderedPrompts, setRenderedPrompts] = useState<Partial<Record<FrameType, string>>>({})
   const [promptDrafts, setPromptDrafts] = useState<Partial<Record<FrameType, string>>>({})
   const [openCh, setOpenCh] = useState<Record<string, boolean>>({}) // 镜头列表按集折叠
   const [thumbs, setThumbs] = useState<Record<string, Partial<Record<FrameType, string>>>>({}) // 镜头缩略图索引
@@ -39,8 +38,6 @@ export default function Frames({ project }: { project: Project | null }) {
   // 当前选中镜头 id 的实时引用：异步链回写前用它校验镜头未被切走
   const selRef = useRef<string | null>(null)
   useEffect(() => { selRef.current = sel?.id ?? null }, [sel])
-  // 用户手动改过的提示词不能再被异步参考图渲染结果覆盖。
-  const promptEditedRef = useRef<Partial<Record<FrameType, boolean>>>({})
   // 卸载时置位，正在轮询的任务据此停止
   // 挂载时重置：StrictMode(dev) 模拟卸载会把 ref 置 true 且跨挂载保留，不重置则轮询秒取消
   const cancelledRef = useRef(false)
@@ -97,42 +94,10 @@ export default function Frames({ project }: { project: Project | null }) {
   useEffect(() => {
     if (!sel) return
     const shotId = sel.id
-    setRenderedPrompts({})
     setPromptDrafts({})
-    promptEditedRef.current = {}
     loadFrames(shotId)
     api.shotDetail(shotId).then((d) => { if (selRef.current === shotId) setDetail(d) })
   }, [sel, loadFrames])
-
-  useEffect(() => {
-    if (!sel || !detail) return
-    const shotId = sel.id
-    let cancelled = false
-    const bases: [FrameType, string][] = [
-      ['key', detail.key_frame_prompt],
-    ].filter(([, v]) => v && String(v).trim()) as [FrameType, string][]
-    if (!bases.length) return
-    ;(async () => {
-      const refs = await api.frameRefs(shotId, project?.id).catch(() => [])
-      const next: Partial<Record<FrameType, string>> = {}
-      for (const [ft, base] of bases) {
-        const finalBase = stripReferenceLines(String(base).trim()) + api.refGuard(refs)
-        const rendered = await api.renderFramePrompt(shotId, ft, finalBase, refs).catch(() => null)
-        next[ft] = (rendered?.rendered_prompt || finalBase).trim()
-      }
-      if (!cancelled && selRef.current === shotId) {
-        setRenderedPrompts(next)
-        setPromptDrafts((drafts) => {
-          const updated = { ...drafts }
-          for (const [frameType, prompt] of Object.entries(next) as [FrameType, string][]) {
-            if (!promptEditedRef.current[frameType]) updated[frameType] = prompt
-          }
-          return updated
-        })
-      }
-    })()
-    return () => { cancelled = true }
-  }, [detail, project?.id, sel])
 
   const setFrame = (ft: FrameType, patch: Partial<FrameState>) =>
     setFrames((prev) => ({ ...prev, [ft]: { ...prev[ft], ...patch } }))
@@ -142,13 +107,14 @@ export default function Frames({ project }: { project: Project | null }) {
     if (frames[ft].busy) return // 该帧正在生成，防重入
     const shotId = sel.id
     const shot = sel
-    const manualPrompt = stripReferenceLines(promptDrafts[ft] || '')
+    // 已保存或正在编辑的提示词是用户可控的唯一来源；参考图约束只临时用于本次生图。
+    const savedPrompt = String(promptDrafts[ft] ?? detail?.key_frame_prompt ?? '').trim()
     const alive = () => selRef.current === shotId // 镜头未被切走才回写 UI
     const cancelled = () => cancelledRef.current
     setFrame(ft, { busy: true, error: '', stage: '生成提示词…' })
     try {
       // 1) 基础提示词（失败/空则退回剧本摘录构造）
-      let prompt = manualPrompt
+      let prompt = savedPrompt
       if (!prompt) {
         try {
           const ptask = await api.createFramePromptTask(shotId, ft)
@@ -169,11 +135,11 @@ export default function Frames({ project }: { project: Project | null }) {
       // 2) 生成图（target_ratio 必填；503=无图像模型 会在此同步抛出）
       // 带上镜头关联的造型图作参考图（角色→场景→道具）——跨镜一致性的关键
       const refs = await api.frameRefs(shotId, project?.id)
-      const finalBasePrompt = stripReferenceLines(prompt) + api.refGuard(refs)
-      const rendered = manualPrompt ? null : await api.renderFramePrompt(shotId, ft, finalBasePrompt, refs).catch(() => null)
+      const finalBasePrompt = (savedPrompt || stripReferenceLines(prompt)) + api.refGuard(refs)
+      const rendered = savedPrompt ? null : await api.renderFramePrompt(shotId, ft, finalBasePrompt, refs).catch(() => null)
       const finalPrompt = (rendered?.rendered_prompt || finalBasePrompt).trim()
-      if (alive()) setRenderedPrompts((m) => ({ ...m, [ft]: finalPrompt }))
-      if (alive()) setPromptDrafts((m) => ({ ...m, [ft]: finalPrompt }))
+      // 仅在系统首次生成提示词时显示结果；用户已有提示词时绝不把附加约束回写到编辑框。
+      if (alive() && !savedPrompt) setPromptDrafts((m) => ({ ...m, [ft]: finalPrompt }))
       if (alive()) setFrame(ft, { stage: refs.length ? `生成画面…（${refs.length} 张参考图）` : '生成画面…' })
       const ratio = project?.default_video_ratio || '9:16'
       const itask = await api.createFrameImageTask(shotId, ft, finalPrompt, ratio, refs)
@@ -407,7 +373,7 @@ export default function Frames({ project }: { project: Project | null }) {
                 <div className="ph"><span className="k">画面提示词</span></div>
                 {(() => {
                   const map: [FrameType, string][] = [
-                    ['key', promptDrafts.key ?? renderedPrompts.key ?? detail?.key_frame_prompt ?? ''],
+                    ['key', promptDrafts.key ?? detail?.key_frame_prompt ?? ''],
                   ]
                   const labels: Partial<Record<FrameType, string>> = { key: '关键帧' }
                   return (
@@ -430,7 +396,6 @@ export default function Frames({ project }: { project: Project | null }) {
                             value={promptDrafts[ft] ?? v}
                             placeholder="输入关键帧画面提示词"
                             onChange={(e) => {
-                              promptEditedRef.current[ft] = true
                               setPromptDrafts((m) => ({ ...m, [ft]: e.target.value }))
                             }}
                             onBlur={(e) => {

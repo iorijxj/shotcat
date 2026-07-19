@@ -87,6 +87,7 @@ export default function Cast({ project }: { project: Project | null }) {
   const [lb, setLb] = useState<string | null>(null)
   const [promptEdits, setPromptEdits] = useState<Record<string, string>>({})
   const [promptResetTick, setPromptResetTick] = useState(0)
+  const [exporting, setExporting] = useState(false)
   const cancelledRef = useRef(false) // 卸载后停止轮询/批量
   // 挂载时必须重置：React 18 StrictMode(dev) 会模拟卸载再挂载，ref 跨挂载保留，
   // 不重置的话所有轮询一进来就"已取消"（任务照发、前端秒放弃）
@@ -467,6 +468,34 @@ export default function Cast({ project }: { project: Project | null }) {
     } catch (x: any) { setErr(x?.message || '视觉词典生成失败') } finally { setPipe('') }
   }
 
+  async function exportAssets() {
+    if (!project || exporting) return
+    setExporting(true)
+    setErr('')
+    try {
+      const response = await api.exportProjectAssets(project.id)
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.message || `导出失败 ${response.status}`)
+      }
+      const contentDisposition = response.headers.get('Content-Disposition') || ''
+      const encodedName = /filename\*=UTF-8''([^;]+)/.exec(contentDisposition)?.[1]
+      const filename = encodedName ? decodeURIComponent(encodedName) : `${project.name || '项目'}_设定图.zip`
+      const blobUrl = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(blobUrl)
+    } catch (error: any) {
+      setErr(error?.message || '导出设定图失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   if (!project) return <div className="center">未找到项目 · 请先用 bridge 导入剧本</div>
 
   return (
@@ -474,6 +503,9 @@ export default function Cast({ project }: { project: Project | null }) {
       <div className="work-head">
         <h1>造型</h1>
         <div className="spacer" />
+        <button className="btn ghost" disabled={exporting || !!batch || !!busy} onClick={exportAssets}>
+          {exporting ? '打包导出中…' : '批量导出设定'}
+        </button>
         <button className="btn ghost" disabled={!!pipe || !!busy} onClick={lockVisualDict}>
           {pipe === 'dict' ? '锁定中…（读全剧本）' : '① 锁定角色状态与视觉词典'}
         </button>

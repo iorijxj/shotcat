@@ -31,7 +31,8 @@ from app.schemas.studio.projects import (
     ProjectUpdate,
     StyleOption,
 )
-from app.services.studio.keyframe_export import iter_keyframe_archive, list_project_keyframe_export_items
+from app.services.studio.asset_export import list_project_asset_export_items
+from app.services.studio.keyframe_export import iter_file_archive, iter_keyframe_archive, list_project_keyframe_export_items
 
 router = APIRouter()
 
@@ -121,6 +122,27 @@ async def export_project_keyframes(
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
             "X-Shotcat-Keyframe-Count": str(len(items)),
+        },
+    )
+
+
+@router.get(
+    "/{project_id}/assets/export",
+    response_class=StreamingResponse,
+    summary="批量导出项目设定图 ZIP",
+)
+async def export_project_assets(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """导出角色、场景、道具的全部已生成设定图，按类型目录和资产名称命名。"""
+    filename, items = await list_project_asset_export_items(db, project_id=project_id)
+    return StreamingResponse(
+        iter_file_archive(items, skipped_label="设定图"),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-Shotcat-Asset-Count": str(len(items)),
         },
     )
 
