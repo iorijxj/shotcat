@@ -23,7 +23,49 @@ async function post<T = any>(path: string, body: any): Promise<T> {
   return (j?.data ?? j) as T
 }
 
+async function patch<T = any>(path: string, body: any): Promise<T> {
+  const r = await fetch(BASE + path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  let j: any = null
+  try {
+    j = await r.json()
+  } catch {}
+  if (!r.ok) throw new Error(j?.message || `PATCH ${path} ${r.status}`)
+  return (j?.data ?? j) as T
+}
+
+async function put<T = any>(path: string, body: any): Promise<T> {
+  const r = await fetch(BASE + path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  let j: any = null
+  try {
+    j = await r.json()
+  } catch {}
+  if (!r.ok) throw new Error(j?.message || `PUT ${path} ${r.status}`)
+  return (j?.data ?? j) as T
+}
+
 export interface Project { id: string; name: string; description?: string; style?: string; visual_style?: string; progress?: number; default_video_ratio?: string }
+export interface ProviderSupported {
+  key: string; display_name: string; aliases: string[]
+  supported_categories: string[]
+  default_base_url: string | null
+  requires_api_key: boolean; requires_api_secret: boolean; is_experimental: boolean
+}
+export interface ModelSettings {
+  id: number
+  default_text_model_id: string | null
+  default_image_model_id: string | null
+  default_video_model_id: string | null
+  api_timeout: number
+  log_level: string
+}
 export interface Chapter { id: string; index: number; title: string; project_id: string; raw_text?: string }
 export interface Shot {
   id: string; index: number; chapter_id?: string; title?: string; status?: string; script_excerpt?: string
@@ -98,12 +140,22 @@ export const api = {
     fetch(`${BASE}/studio/projects/${id}`, { method: 'DELETE' }).then((r) => {
       if (!r.ok) throw new Error(`删除失败 ${r.status}`)
     }),
-  updateProject: (id: string, patch: Partial<Project>) =>
+  updateProject: (id: string, patchBody: Partial<Project>) =>
     fetch(`${BASE}/studio/projects/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patchBody),
     }).then((r) => {
       if (!r.ok) throw new Error(`更新失败 ${r.status}`)
     }),
+  // LLM 配置（临时）：供应商/模型/全局默认设置，见 web/src/LlmConfig.tsx
+  llmSupportedProviders: () => get<ProviderSupported[]>('/llm/providers/supported'),
+  llmGetProvider: (id: string) => get<any>(`/llm/providers/${id}`),
+  llmCreateProvider: (body: any) => post<any>('/llm/providers', body),
+  llmUpdateProvider: (id: string, body: any) => patch<any>(`/llm/providers/${id}`, body),
+  llmGetModel: (id: string) => get<any>(`/llm/models/${id}`),
+  llmCreateModel: (body: any) => post<any>('/llm/models', body),
+  llmUpdateModel: (id: string, body: any) => patch<any>(`/llm/models/${id}`, body),
+  llmGetModelSettings: () => get<ModelSettings>('/llm/model-settings'),
+  llmUpdateModelSettings: (body: any) => put<ModelSettings>('/llm/model-settings', body),
   chapters: (projectId: string) =>
     get<Paged<Chapter>>(`/studio/chapters?project_id=${projectId}&page_size=100`).then((d) =>
       d.items.sort((a, b) => a.index - b.index),

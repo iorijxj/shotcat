@@ -8,6 +8,7 @@ import Lobby from './pages/Lobby'
 import Overview from './pages/Overview'
 import Script from './pages/Script'
 import Gallery from './pages/Gallery'
+import LlmConfig from './LlmConfig'
 
 const STAGES = [
   { key: 'script', label: '剧本', to: '/script' },
@@ -158,6 +159,7 @@ export default function App() {
           </div>
         )}
         <div className="spacer" />
+        <LlmConfig />
         {!onLobby && (
           <div className="search" style={{ cursor: 'pointer' }} onClick={() => project && setSearchOpen(true)}
             title={project ? '搜索镜头、角色、资产' : '先选择项目'}>
