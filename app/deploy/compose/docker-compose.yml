@@ -87,10 +87,10 @@ services:
     restart: "no"
 
   backend:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/backend.Dockerfile
-    restart: unless-stopped
     environment:
       DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_HOST: redis
@@ -127,10 +127,10 @@ services:
         condition: service_completed_successfully
 
   celery-worker:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/backend.Dockerfile
-    restart: unless-stopped
     environment:
       DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_HOST: redis
@@ -159,10 +159,10 @@ services:
     command: ["uv", "run", "celery", "-A", "app.core.celery_app:celery_app", "worker", "-l", "info"]
 
   front:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/front.Dockerfile
-    restart: unless-stopped
     environment:
       BACKEND_URL: ${BACKEND_URL}
     ports:
