@@ -4,8 +4,9 @@ setlocal enabledelayedexpansion
 REM ============================================================
 REM shotcat - server.bat
 REM One-click headless startup: brings up the full docker compose
-REM stack (mysql, redis, rustfs, backend, celery-worker, front) in
-REM the background so the app is reachable over the network
+REM stack (mysql, redis, rustfs, backend, celery-worker, front), builds
+REM and serves the web/ workbench, and starts bridge/pipeline_server.py --
+REM all in the background so the app is reachable over the network
 REM without running any local frontend dev process.
 REM ============================================================
 
@@ -54,6 +55,11 @@ for /f "usebackq tokens=1,2 delims==" %%A in ("%COMPOSE_ENV%") do (
 )
 if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
 if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
+REM web/ is the day-to-day shotcat workbench (casting/shots/keyframes),
+REM a separate Vite app from app/front (the platform's own Studio admin
+REM UI). It has no internal Docker port -- Caddy serves its static build
+REM directly, so there is no *_INTERNAL_PORT counterpart for it below.
+if not defined SERVER_WEB_PORT set "SERVER_WEB_PORT=18081"
 REM Internal ports: what the containers publish on 127.0.0.1. These MUST
 REM differ from the public ports above -- WSL2 mirrored networking tracks
 REM bound ports machine-wide by port number, and reusing the same number
@@ -80,6 +86,21 @@ start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
 %DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d --build
 if errorlevel 1 (
     echo [server] docker compose up failed
+    goto :end
+)
+
+REM web/ ships as a static build served directly by Caddy below (no
+REM container involved), so it must be built before the Caddyfile is
+REM written and Caddy is (re)started.
+echo [server] building web/ ^(the shotcat workbench^)...
+call pnpm --dir "%ROOT%web" install --frozen-lockfile
+if errorlevel 1 (
+    echo [server] pnpm install failed in web/
+    goto :end
+)
+call pnpm --dir "%ROOT%web" run build
+if errorlevel 1 (
+    echo [server] pnpm run build failed in web/
     goto :end
 )
 
@@ -113,7 +134,7 @@ if not exist "%ROOT%tools\caddy.exe" (
 
 REM Legacy cleanup (earlier versions used netsh portproxy on these ports),
 REM plus the firewall openings for the public ports.
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
+for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
     netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
     netsh advfirewall firewall show rule name="shotcat-server-%%P" >nul 2>&1
     if errorlevel 1 (
@@ -133,10 +154,50 @@ set "CADDYFILE=%TEMP%\shotcat-caddyfile"
 >>"%CADDYFILE%" echo :!SERVER_BACKEND_PORT! {
 >>"%CADDYFILE%" echo     reverse_proxy !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
 >>"%CADDYFILE%" echo }
+REM web/ calls its own backend/pipeline through same-origin relative paths
+REM (/api/*, /pipeline/*), so its site block serves the static build and
+REM path-routes those two prefixes instead of a single blanket proxy.
+REM try_files falls back to index.html for anything else -- web/ uses
+REM react-router's BrowserRouter (history mode), so a bare file_server
+REM would 404 on refreshing any deep client-side route.
+>>"%CADDYFILE%" echo :!SERVER_WEB_PORT! {
+>>"%CADDYFILE%" echo     root * "!ROOT!web\dist"
+>>"%CADDYFILE%" echo     reverse_proxy /api/* !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
+>>"%CADDYFILE%" echo     reverse_proxy /pipeline/* 127.0.0.1:5280
+>>"%CADDYFILE%" echo     try_files {path} /index.html
+>>"%CADDYFILE%" echo     file_server
+>>"%CADDYFILE%" echo }
+REM Loopback-only: bridge/*.py (incl. pipeline_server.py) hardcode
+REM http://localhost:8000 as their backend base URL. The docker backend
+REM does not publish host port 8000, so this bridges that expectation to
+REM the real internal port without touching any bridge/ source file. Not
+REM opened on the firewall -- "bind 127.0.0.1" keeps it off the LAN.
+REM (Writing the address as "127.0.0.1:8000 { ... }" instead of "bind"
+REM looks equivalent but is not: Caddy only uses a literal-IP host for
+REM Host-header matching, still listens on 0.0.0.0, and -- because the
+REM host looks like a TLS-capable address -- attaches a TLS connection
+REM policy even with auto_https off, so plain HTTP gets rejected with
+REM "Client sent an HTTP request to an HTTPS server".)
+>>"%CADDYFILE%" echo :8000 {
+>>"%CADDYFILE%" echo     bind 127.0.0.1
+>>"%CADDYFILE%" echo     reverse_proxy !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
+>>"%CADDYFILE%" echo }
 
 echo [server] starting the LAN-facing reverse proxy ^(caddy^) in window "shotcat-caddy"...
 taskkill /FI "WINDOWTITLE eq shotcat-caddy" /T /F >nul 2>&1
 start "shotcat-caddy" /min "%ROOT%tools\caddy.exe" run --config "%CADDYFILE%" --adapter caddyfile
+
+REM web/'s "lock visual dictionary / shot breakdown / narration unit"
+REM features call bridge/pipeline_server.py, fixed on 127.0.0.1:5280.
+where python >nul 2>&1
+if errorlevel 1 (
+    echo [server][WARN] python not found on PATH -- skipping bridge/pipeline_server.py.
+    echo [server][WARN] web/'s visual dictionary / shot breakdown / narration unit features will not work until it is started manually.
+) else (
+    echo [server] starting bridge/pipeline_server.py in window "shotcat-pipeline"...
+    taskkill /FI "WINDOWTITLE eq shotcat-pipeline" /T /F >nul 2>&1
+    start "shotcat-pipeline" /min python "%ROOT%bridge\pipeline_server.py"
+)
 
 REM Self-check: probe each hop so a broken link is visible immediately
 REM instead of being discovered later from another machine. Any HTTP
@@ -145,14 +206,15 @@ set "SELFCHECK_FAIL="
 echo [server] self-check 1/2: containers on internal ports ^(via !CONNECT_ADDR!^)...
 for %%P in (!SERVER_FRONT_INTERNAL_PORT! !SERVER_BACKEND_INTERNAL_PORT!) do call :probe_port !CONNECT_ADDR! %%P
 echo [server] self-check 2/2: full chain through the reverse proxy...
-for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do call :probe_port 127.0.0.1 %%P
+for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do call :probe_port 127.0.0.1 %%P
 
 if defined SELFCHECK_FAIL (
     echo [server] === stack started but the self-check FAILED, LAN access will not work until this is fixed ===
     goto :end
 )
 echo [server] === full stack is up, self-check passed ===
-echo [server] frontend ^(built^): http://localhost:%SERVER_FRONT_PORT%
+echo [server] workbench ^(web/, day-to-day use^): http://localhost:%SERVER_WEB_PORT%
+echo [server] Studio admin ^(app/front^): http://localhost:%SERVER_FRONT_PORT%
 echo [server] backend docs: http://localhost:%SERVER_BACKEND_PORT%/docs
 echo [server] other machines on the same network can reach it via this host's LAN IP on the same ports.
 

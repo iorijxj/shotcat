@@ -25,6 +25,9 @@ app/**/__pycache__/
 app/**/dist/
 app/**/.env
 
+# web/ 工作台构建产物（server.bat 每次起服务都会重新 build）
+web/dist/
+
 # 备份归档
 /_archive/
 

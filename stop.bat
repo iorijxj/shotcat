@@ -19,7 +19,7 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 echo [stop] === stopping shotcat services (test.bat / run.bat / server.bat) ===
 
 echo [stop] closing tagged windows from test.bat / run.bat / server.bat...
-for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "shotcat-front-run" "shotcat-caddy" "shotcat-wsl-keepalive") do (
+for %%T in ("shotcat-backend-test" "shotcat-front-test" "shotcat-backend-run" "shotcat-front-run" "shotcat-caddy" "shotcat-wsl-keepalive" "shotcat-pipeline") do (
     taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 
@@ -53,12 +53,13 @@ if exist "%COMPOSE_ENV%" (
 )
 if not defined SERVER_BACKEND_PORT set "SERVER_BACKEND_PORT=18000"
 if not defined SERVER_FRONT_PORT set "SERVER_FRONT_PORT=18080"
+if not defined SERVER_WEB_PORT set "SERVER_WEB_PORT=18081"
 
 net session >nul 2>&1
 if errorlevel 1 (
-    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports %SERVER_FRONT_PORT%/%SERVER_BACKEND_PORT%. Re-run stop.bat as Administrator if server.bat was used.
+    echo [stop] not running as Administrator, skipped netsh/firewall cleanup for ports %SERVER_FRONT_PORT%/%SERVER_BACKEND_PORT%/%SERVER_WEB_PORT%. Re-run stop.bat as Administrator if server.bat was used.
 ) else (
-    for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT!) do (
+    for %%P in (!SERVER_FRONT_PORT! !SERVER_BACKEND_PORT! !SERVER_WEB_PORT!) do (
         netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=%%P >nul 2>&1
         netsh advfirewall firewall delete rule name="shotcat-server-%%P" >nul 2>&1
     )
