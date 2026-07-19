@@ -54,9 +54,10 @@ async def list_providers_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
+    current_user_id: str,
 ) -> ApiResponse[PaginatedData[ProviderRead]]:
-    """分页查询供应商。"""
-    stmt = select(Provider)
+    """分页查询供应商。created_by 为空（迁移期公共资源）或等于当前用户的才可见。"""
+    stmt = select(Provider).where(Provider.created_by.in_(["", current_user_id]))
     stmt = apply_keyword_filter(stmt, q=q, fields=[Provider.name, Provider.description])
     stmt = apply_order(
         stmt,
@@ -79,8 +80,9 @@ async def create_provider(
     db: AsyncSession,
     *,
     body: ProviderCreate,
+    current_user_id: str,
 ) -> Provider:
-    """创建供应商。"""
+    """创建供应商。created_by 只能来自登录态，不信任请求体。"""
     await ensure_not_exists(
         db,
         Provider,
@@ -100,7 +102,7 @@ async def create_provider(
             api_secret=body.api_secret,
             description=body.description,
             status=body.status,
-            created_by=body.created_by,
+            created_by=current_user_id,
         ),
     )
 
@@ -146,9 +148,11 @@ async def list_models_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
+    current_user_id: str,
 ) -> ApiResponse[PaginatedData[ModelRead]]:
-    """分页查询模型。"""
-    stmt = select(Model)
+    """分页查询模型。provider_id 未指定时，限定为当前用户可见（含公共）的供应商下的模型。"""
+    owned_provider_ids = select(Provider.id).where(Provider.created_by.in_(["", current_user_id]))
+    stmt = select(Model).where(Model.provider_id.in_(owned_provider_ids))
     if provider_id is not None:
         stmt = stmt.where(Model.provider_id == provider_id)
     if category is not None:
@@ -201,7 +205,6 @@ async def create_model(
             provider_id=body.provider_id,
             params=body.params,
             description=body.description,
-            created_by=body.created_by,
         ),
     )
 

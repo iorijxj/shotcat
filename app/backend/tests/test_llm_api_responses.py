@@ -8,18 +8,28 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.llm import Model, ModelCategoryKey, ModelSettings, Provider, ProviderStatus
 from tests.support.llm_api_app import build_llm_only_app
 
 # 仅挂载 /api/v1/llm，避免导入 app.main 时连带加载 film 路由与 Celery。
 llm_app = build_llm_only_app()
 
+TEST_USER_ID = "tester"
+
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    with TestClient(llm_app) as c:
-        yield c
+    async def _fake_current_user() -> User:
+        return User(id=TEST_USER_ID, username="tester", password_hash="x")
+
+    llm_app.dependency_overrides[get_current_user] = _fake_current_user
+    try:
+        with TestClient(llm_app) as c:
+            yield c
+    finally:
+        llm_app.dependency_overrides.pop(get_current_user, None)
 
 
 class _FakeLlmDB:

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_current_user, get_db
 from app.models.auth import User
+from app.models.llm import Model, Provider
 from app.models.studio import Actor, Chapter, Character, Costume, FileUsage, Project, Prop, Scene, Shot
 from app.services.common import entity_not_found
 
@@ -105,6 +106,27 @@ async def assert_entity_owned(db: AsyncSession, *, entity_type: str, entity_id: 
     if obj.project_id is not None:
         await assert_project_owned(db, project_id=obj.project_id, current_user=current_user, not_found_name=display_name)
     return obj
+
+
+def _provider_not_owned(provider: Provider | None, current_user: User) -> bool:
+    return provider is None or (bool(provider.created_by) and provider.created_by != current_user.id)
+
+
+async def assert_provider_owned(db: AsyncSession, *, provider_id: str, current_user: User) -> Provider:
+    """created_by 为空视为迁移期公共资源（历史数据/尚未回填的存量 Provider），登录用户均可访问；
+    非空则必须等于当前用户，否则 404。"""
+    provider = await db.get(Provider, provider_id)
+    if _provider_not_owned(provider, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("Provider"))
+    return provider
+
+
+async def assert_model_owned(db: AsyncSession, *, model_id: str, current_user: User) -> Model:
+    model = await db.get(Model, model_id)
+    if model is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("Model"))
+    await assert_provider_owned(db, provider_id=model.provider_id, current_user=current_user)
+    return model
 
 
 async def assert_file_owned(db: AsyncSession, *, file_id: str, current_user: User) -> None:

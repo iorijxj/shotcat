@@ -5,9 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.llm import ModelCategoryKey
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, success_response
+from app.services.auth.ownership import assert_model_owned, assert_provider_owned
 from app.schemas.llm import (
     ImageGenerationOptionsRead,
     ModelCreate,
@@ -26,9 +28,7 @@ from app.services.llm.manage import (
     create_provider as create_provider_service,
     delete_model as delete_model_service,
     delete_provider as delete_provider_service,
-    get_model as get_model_service,
     get_model_settings as get_model_settings_service,
-    get_provider as get_provider_service,
     get_image_generation_options as get_image_generation_options_service,
     get_video_generation_options as get_video_generation_options_service,
     list_supported_providers as list_supported_providers_service,
@@ -58,6 +58,7 @@ MAX_PAGE_SIZE = 100
 )
 async def list_providers(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
     order: str | None = Query(None, description="排序字段：name, created_at, updated_at"),
     is_desc: bool = Query(False, description="是否倒序"),
@@ -72,6 +73,7 @@ async def list_providers(
         page=page,
         page_size=page_size,
         allow_fields=PROVIDER_ORDER_FIELDS,
+        current_user_id=current_user.id,
     )
 
 
@@ -120,8 +122,9 @@ async def get_video_generation_options(
 async def create_provider(
     body: ProviderCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProviderRead]:
-    provider = await create_provider_service(db, body=body)
+    provider = await create_provider_service(db, body=body, current_user_id=current_user.id)
     return created_response(ProviderRead.model_validate(provider))
 
 
@@ -133,8 +136,9 @@ async def create_provider(
 async def get_provider(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProviderRead]:
-    provider = await get_provider_service(db, provider_id=provider_id)
+    provider = await assert_provider_owned(db, provider_id=provider_id, current_user=current_user)
     return success_response(ProviderRead.model_validate(provider))
 
 
@@ -147,7 +151,9 @@ async def update_provider(
     provider_id: str,
     body: ProviderUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ProviderRead]:
+    await assert_provider_owned(db, provider_id=provider_id, current_user=current_user)
     provider = await update_provider_service(db, provider_id=provider_id, body=body)
     return success_response(ProviderRead.model_validate(provider))
 
@@ -161,7 +167,9 @@ async def update_provider(
 async def delete_provider(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    await assert_provider_owned(db, provider_id=provider_id, current_user=current_user)
     await delete_provider_service(db, provider_id=provider_id)
     return empty_response()
 
@@ -176,6 +184,7 @@ async def delete_provider(
 )
 async def list_models(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     provider_id: str | None = Query(None, description="按供应商过滤"),
     category: ModelCategoryKey | None = Query(None, description="按模型类别过滤"),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
@@ -184,6 +193,8 @@ async def list_models(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="每页条数"),
 ) -> ApiResponse[PaginatedData[ModelRead]]:
+    if provider_id is not None:
+        await assert_provider_owned(db, provider_id=provider_id, current_user=current_user)
     return await list_models_paginated(
         db,
         provider_id=provider_id,
@@ -194,6 +205,7 @@ async def list_models(
         page=page,
         page_size=page_size,
         allow_fields=MODEL_ORDER_FIELDS,
+        current_user_id=current_user.id,
     )
 
 
@@ -206,7 +218,9 @@ async def list_models(
 async def create_model(
     body: ModelCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ModelRead]:
+    await assert_provider_owned(db, provider_id=body.provider_id, current_user=current_user)
     model = await create_model_service(db, body=body)
     return created_response(ModelRead.model_validate(model))
 
@@ -219,8 +233,9 @@ async def create_model(
 async def get_model(
     model_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ModelRead]:
-    model = await get_model_service(db, model_id=model_id)
+    model = await assert_model_owned(db, model_id=model_id, current_user=current_user)
     return success_response(ModelRead.model_validate(model))
 
 
@@ -233,7 +248,11 @@ async def update_model(
     model_id: str,
     body: ModelUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[ModelRead]:
+    await assert_model_owned(db, model_id=model_id, current_user=current_user)
+    if body.provider_id is not None:
+        await assert_provider_owned(db, provider_id=body.provider_id, current_user=current_user)
     model = await update_model_service(db, model_id=model_id, body=body)
     return success_response(ModelRead.model_validate(model))
 
@@ -247,7 +266,9 @@ async def update_model(
 async def delete_model(
     model_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
+    await assert_model_owned(db, model_id=model_id, current_user=current_user)
     await delete_model_service(db, model_id=model_id)
     return empty_response()
 

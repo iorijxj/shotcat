@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     auth_jwt_secret: str
     auth_jwt_expire_minutes: int = 43200  # 30 天，内部工具场景无需频繁重登
 
+    # LLM Provider api_key/api_secret 静态加密密钥（Fernet），必须由环境变量提供
+    provider_secret_enc_key: str
+
     @property
     def cors_origins_list(self) -> list[str]:
         s = (self.cors_origins or "").strip()

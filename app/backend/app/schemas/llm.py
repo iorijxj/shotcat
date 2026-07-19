@@ -21,7 +21,6 @@ class ProviderBase(BaseModel):
         ProviderStatus.testing,
         description="状态：active/testing/disabled",
     )
-    created_by: str = Field("", description="创建人")
 
 
 class ProviderCreate(ProviderBase):
@@ -104,7 +103,6 @@ class ModelBase(BaseModel):
     provider_id: str = Field(..., description="所属供应商 ID")
     params: dict[str, Any] = Field(default_factory=dict, description="模型参数（JSON）")
     description: str = Field("", description="说明")
-    created_by: str = Field("", description="创建人")
 
 
 class ModelCreate(ModelBase):

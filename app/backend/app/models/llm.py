@@ -11,9 +11,32 @@ from typing import Any
 
 from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from app.core.db import Base
+from app.core.secret_crypto import decrypt_secret_or_passthrough, encrypt_secret
 from app.models.base import TimestampMixin
+
+
+class EncryptedSecret(TypeDecorator):
+    """透明加密/解密的敏感字段类型：写入时加密，读出时解密。
+
+    对尚未迁移的旧明文数据读取时原样返回（见 decrypt_secret_or_passthrough），
+    保证加密上线当天不会因为存量数据报错；一次性迁移脚本跑完后所有行都是密文。
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: str | None, dialect: object) -> str | None:
+        if value is None:
+            return None
+        return encrypt_secret(value)
+
+    def process_result_value(self, value: str | None, dialect: object) -> str | None:
+        if value is None:
+            return None
+        return decrypt_secret_or_passthrough(value)
 
 
 class AgentTypeKey(str, Enum):
@@ -75,8 +98,8 @@ class Provider(Base, TimestampMixin):
         default=None,
         comment="视频能力 API Base URL（可选覆盖）",
     )
-    api_key: Mapped[str] = mapped_column(String(4096), nullable=False, default="", comment="API Key（敏感）")
-    api_secret: Mapped[str] = mapped_column(String(4096), nullable=False, default="", comment="API Secret（敏感）")
+    api_key: Mapped[str] = mapped_column(EncryptedSecret(), nullable=False, default="", comment="API Key（敏感，加密存储）")
+    api_secret: Mapped[str] = mapped_column(EncryptedSecret(), nullable=False, default="", comment="API Secret（敏感，加密存储）")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="说明")
     status: Mapped[ProviderStatus] = mapped_column(
         String(32),
@@ -84,7 +107,12 @@ class Provider(Base, TimestampMixin):
         default=ProviderStatus.testing,
         comment="状态",
     )
-    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="", comment="创建人")
+    created_by: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="",
+        comment="所属用户 ID（服务端从登录态赋值，不信任请求体；空串视为迁移期公共资源）",
+    )
 
     models: Mapped[list["Model"]] = relationship(
         back_populates="provider",

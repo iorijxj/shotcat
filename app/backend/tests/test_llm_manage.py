@@ -39,6 +39,7 @@ async def test_create_model_persists_with_non_default_flag() -> None:
                 base_url="https://api.openai.com/v1",
                 api_key="k",
             ),
+            current_user_id="test-user",
         )
         created = await create_model(
             db,
@@ -134,6 +135,7 @@ async def test_list_models_paginated_returns_filtered_items() -> None:
             page=1,
             page_size=10,
             allow_fields={"created_at", "name"},
+            current_user_id="test-user",
         )
 
         assert resp.data is not None
@@ -154,6 +156,7 @@ async def test_create_model_rejects_unsupported_category_for_provider() -> None:
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 api_key="k",
             ),
+            current_user_id="test-user",
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -183,6 +186,7 @@ async def test_update_model_rejects_switch_to_unsupported_provider_category_comb
                 base_url="https://api.openai.com/v1",
                 api_key="k",
             ),
+            current_user_id="test-user",
         )
         await create_provider(
             db,
@@ -192,6 +196,7 @@ async def test_update_model_rejects_switch_to_unsupported_provider_category_comb
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 api_key="k",
             ),
+            current_user_id="test-user",
         )
         await create_model(
             db,
@@ -226,6 +231,7 @@ async def test_get_image_generation_options_uses_default_image_model_capability(
                 base_url="https://ark.cn-beijing.volces.com/api/v3",
                 api_key="k",
             ),
+            current_user_id="test-user",
         )
         await create_model(
             db,
