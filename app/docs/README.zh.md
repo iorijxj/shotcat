@@ -1,5 +1,7 @@
 # Jellyfish AI短剧工厂 / AI Short Drama Studio
 
+> **历史 Studio 文档。** 本文描述的是 `app/front/` 的管理界面（端口 `7788`），不是当前日常制作工作台。请使用仓库根目录的 [README](../../README.md)，并从 `web/` 启动 <http://127.0.0.1:5273>。项目数据库、生成图片和密钥不随 Git 同步，不同电脑需要单独迁移这些数据才能看到相同内容。
+
 <p align="center">
   <img src="./img/logo.svg" alt="Jellyfish Logo" width="160" />
 </p>

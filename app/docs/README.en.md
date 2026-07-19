@@ -1,5 +1,7 @@
 # Jellyfish — AI Short Drama Studio
 
+> **Legacy Studio documentation.** This document describes the `app/front/` management UI on port `7788`, not the current day-to-day production workspace. Use the repository [README](../../README.md) and start `web/` at <http://127.0.0.1:5273>. Project databases, generated images, and secrets are local-only and are not synchronized by Git.
+
 <p align="center">
   <img src="./img/logo.svg" alt="Jellyfish Logo" width="160" />
 </p>

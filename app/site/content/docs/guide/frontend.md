@@ -4,7 +4,11 @@ weight: 2
 description: "理解前端页面组织、请求层和状态管理。"
 ---
 
-前端位于 `front/`，使用 React 18、TypeScript、Vite 与 Ant Design。核心结构如下：
+当前日常制作前端位于仓库根目录 `web/`，使用 React、TypeScript 与 Vite，默认访问 `http://localhost:5273`。它是产品功能的唯一比对基准。
+
+`app/front/` 是保留的旧 Studio 管理前端，使用 Ant Design 与 OpenAPI 生成客户端，默认端口 `7788`；它与当前工作台页面不同，仅用于维护和历史兼容。
+
+旧 Studio 前端的核心结构如下：
 
 - `src/App.tsx`：路由入口
 - `src/layouts/`：全局布局
