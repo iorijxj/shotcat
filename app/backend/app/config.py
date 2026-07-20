@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # 0 表示关闭。清单见 app/core/rate_limit.py。
     generation_rate_limit_per_minute: int = 10
 
+    # 登录接口限流（公众化 M1）：每来源 IP 每分钟允许的 /auth/login 请求数，0 关闭。
+    # 与 login_max_failures_*（按失败次数锁定、含 username 维度）互补——此项挡请求洪泛，
+    # 那项挡定向撞库。注意经 Caddy 反代时 client IP 退化为网关地址，此限流近似全局
+    # 洪泛上限而非严格 per-IP，故默认给得较宽，按真实并发登录量调整。
+    login_rate_limit_per_minute: int = 60
+
     @property
     def cors_origins_list(self) -> list[str]:
         s = (self.cors_origins or "").strip()

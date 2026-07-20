@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.core.rate_limit import GenerationRateLimitMiddleware, reset_generation_rate_limit
+from app.core.rate_limit import RateLimitMiddleware, reset_generation_rate_limit
 from app.services.auth.security import create_access_token
 
 
@@ -24,7 +24,7 @@ def _clean_rate_limit_state():
 
 def _build_app() -> TestClient:
     application = FastAPI()
-    application.add_middleware(GenerationRateLimitMiddleware)
+    application.add_middleware(RateLimitMiddleware)
 
     @application.post("/api/v1/film/tasks/video")
     async def create_video():  # noqa: ANN202
