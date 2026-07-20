@@ -101,9 +101,14 @@ REM handle prevents the idle stop deterministically.
 taskkill /FI "WINDOWTITLE eq shotcat-wsl-keepalive" /T /F >nul 2>&1
 start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
 
-%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d --build
+REM Use the images install.bat pre-built; deliberately NOT --build. This
+REM machine's proxy truncates registry pulls (auth.docker.io EOF), so
+REM resolving the base image at serve-time is unreliable. install.bat owns
+REM image builds -- after changing backend code, re-run install.bat to
+REM rebuild the images before serving.
+%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d
 if errorlevel 1 (
-    echo [server] docker compose up failed
+    echo [server] docker compose up failed ^(images missing? run install.bat first^)
     goto :end
 )
 
@@ -152,7 +157,13 @@ if not exist "%ROOT%tools\caddy.exe" (
 
 REM Hash the basicauth password fresh on every start (never written to disk in
 REM plaintext outside .env) so the generated Caddyfile only ever holds a bcrypt hash.
-for /f "delims=" %%H in ('"%ROOT%tools\caddy.exe" hash-password --plaintext "!CADDY_BASIC_AUTH_PASSWORD!" 2^>nul') do set "CADDY_BASIC_AUTH_HASH=%%H"
+REM The whole command is wrapped in an extra ^"...^" pair: for /f runs its command
+REM through an inner cmd /c, and when that command starts with a quote (the quoted
+REM caddy.exe path) cmd strips the first and last quote of the ENTIRE line, corrupting
+REM the exe name into "...caddy.exe^"" and making it "not recognized" (hash comes back
+REM empty -> the abort below). The extra outer pair is what cmd strips, leaving the
+REM real quoting intact.
+for /f "delims=" %%H in ('^""%ROOT%tools\caddy.exe" hash-password --plaintext "!CADDY_BASIC_AUTH_PASSWORD!" 2^>nul^"') do set "CADDY_BASIC_AUTH_HASH=%%H"
 if not defined CADDY_BASIC_AUTH_HASH (
     echo [server] failed to hash CADDY_BASIC_AUTH_PASSWORD via caddy.exe -- aborting.
     goto :end

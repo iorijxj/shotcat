@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type ProviderSupported } from './lib/api'
+import { currentUserId } from './lib/auth'
 
 const CATEGORY_LABEL: Record<string, string> = {
   text: '文本模型（剧本拆解等）',
@@ -44,11 +45,15 @@ export default function LlmConfig() {
     if (!baseUrl.trim()) return setErr('请输入 Base URL')
     const filled = current.supported_categories.filter((c) => modelNames[c]?.trim())
     if (filled.length === 0) return setErr('至少填写一个模型名称（文本/图片/视频任选）')
+    const uid = currentUserId()
+    if (!uid) return setErr('登录态失效，请重新登录')
     setBusy(true)
     setErr('')
     setOk('')
     try {
-      const providerId = `llmcfg_${current.key}`
+      // provider/model id 拼上当前用户 id，保证不同用户的同类配置各自独立，
+      // 不撞全局主键（此前写死 llmcfg_<key>，多用户第二个人必然 409）。
+      const providerId = `llmcfg_${current.key}_${uid.replace(/-/g, '')}`
       const providerBody = {
         name: current.display_name,
         base_url: baseUrl.trim(),

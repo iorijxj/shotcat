@@ -6,6 +6,19 @@ export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY)
 
 export const isLoggedIn = (): boolean => !!getToken()
 
+// 从 JWT 解析当前用户 id（payload.sub）。仅用于前端拼装 per-user 资源 id，
+// 真正的鉴权在后端。
+export function currentUserId(): string | null {
+  const token = getToken()
+  if (!token) return null
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(atob(base64)).sub ?? null
+  } catch {
+    return null
+  }
+}
+
 export function logout(): void {
   localStorage.removeItem(TOKEN_KEY)
 }

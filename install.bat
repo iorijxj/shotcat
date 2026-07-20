@@ -281,8 +281,8 @@ if errorlevel 1 (
 popd
 
 REM ---- 6. Pre-build docker images used by server.bat ----
-echo [install] pre-building docker images for server.bat ^(backend/celery^)...
-%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" build backend celery-worker
+echo [install] pre-building docker images for server.bat ^(backend/celery/init-db^)...
+%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" build backend celery-worker backend-init-db
 
 echo [install] === setup complete. You can now run test.bat / run.bat / server.bat ===
 echo [install] note: server.bat needs to be run as Administrator ^(it opens LAN-facing ports via netsh^).
