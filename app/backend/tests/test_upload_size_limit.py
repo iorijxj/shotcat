@@ -29,8 +29,15 @@ def _upload_file_of(filename: str, size_bytes: int) -> UploadFile:
     return UploadFile(file=io.BytesIO(b"x" * size_bytes), filename=filename)
 
 
+# 测试用小阈值：与生产默认（10M/200M）解耦，既验证按类型分别生效，又不必分配
+# 上百 MB 缓冲拖慢测试。
+_TEST_IMAGE_MB = 1
+_TEST_VIDEO_MB = 2
+
+
 @pytest.mark.asyncio
-async def test_oversized_image_rejected_with_413() -> None:
+async def test_oversized_image_rejected_with_413(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "upload_max_image_mb", _TEST_IMAGE_MB)
     db, engine = await _build_session()
     async with db:
         too_big = settings.upload_max_image_mb * _MB + 1
@@ -41,7 +48,8 @@ async def test_oversized_image_rejected_with_413() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_video_rejected_with_413() -> None:
+async def test_oversized_video_rejected_with_413(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "upload_max_video_mb", _TEST_VIDEO_MB)
     db, engine = await _build_session()
     async with db:
         too_big = settings.upload_max_video_mb * _MB + 1
@@ -53,6 +61,8 @@ async def test_oversized_video_rejected_with_413() -> None:
 
 @pytest.mark.asyncio
 async def test_image_at_limit_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "upload_max_image_mb", _TEST_IMAGE_MB)
+
     async def _fake_storage_upload(**kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(url="http://storage/fake")
 

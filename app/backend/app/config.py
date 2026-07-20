@@ -67,17 +67,26 @@ class Settings(BaseSettings):
     # 登录防暴力破解（安全整改阶段三 3.1）：同一用户名/IP 在锁定窗口内连续失败
     # 达到阈值即锁定 login_lockout_seconds。IP 阈值故意更高：经 Caddy 反代时
     # client IP 退化为网关地址，IP 维度等效全局兜底，阈值太低会误锁所有人。
+    # 公网重审（M1）：username 维度是精确的（不受反代退化影响），5 次/15 分足以
+    # 挡定向撞库、又不至于误锁正常用户，维持不变；IP 维度因反代退化保持 30 的宽松
+    # 兜底，收紧只会连坐同网关下的所有人，故不动。请求洪泛另由 login_rate_limit 挡。
     login_max_failures_per_user: int = 5
     login_max_failures_per_ip: int = 30
     login_lockout_seconds: int = 900
 
     # 文件上传大小上限（安全整改阶段三 3.2），按类型区分，单位 MB。
     # 仅约束用户手动上传（/studio/files/upload）；AI 生成结果落库走内部下载链路，不受此限。
-    upload_max_image_mb: int = 2
-    upload_max_video_mb: int = 5
+    # 公网重审（M1）：原 2M/5M 面向局域网内部素材，真实短剧的参考图/样片明显偏小，
+    # 上调到 10M 图 / 200M 视频以覆盖常见制作素材；仍保留硬上限防单请求撑爆存储，
+    # 面向公众的总量滥用由后续 M3 的按租户配额兜底。
+    upload_max_image_mb: int = 10
+    upload_max_video_mb: int = 200
 
     # SSRF 防护开关（安全整改阶段三 3.3）：默认拦截指向内网/本机的下载地址。
     # 仅本地开发用 localhost mock 供应商时才可临时置 true，任何部署环境保持 false。
+    # 公网重审（M1）：ssrf_guard 采用「只放行 is_global 公网 IP」的默认拒绝策略，
+    # 已覆盖私有网段/回环/链路本地(含云元数据 169.254)/保留/CGNAT，公网强度足够，
+    # 无需再维护易漏的黑名单；默认 False 维持不变。
     ssrf_allow_private_targets: bool = False
 
     # AI 生成类接口限流（安全整改阶段三 3.4）：每登录用户每分钟允许的生成请求数，
