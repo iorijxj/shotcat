@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.v1.routes.film import task_status as task_status_route
@@ -13,6 +14,23 @@ from app.dependencies import get_db
 from app.main import app
 from app.models.task import GenerationDeliveryMode, GenerationTask, GenerationTaskStatus
 from app.models.task_links import GenerationTaskLink, GenerationTaskLinkStatus
+
+
+@pytest.fixture(autouse=True)
+def _bypass_ownership(monkeypatch):
+    """本文件只测响应壳格式；归属校验（4.1）由 test_task_link_ownership.py 用真实 DB 覆盖，
+    这里放行以隔离关注点（_FakeTaskDB 不支持多态实体反查）。"""
+
+    async def _ok(*_args, **_kwargs):
+        return None
+
+    async def _true(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(task_status_route, "assert_task_owned", _ok)
+    monkeypatch.setattr(task_status_route, "assert_task_link_owned", _ok)
+    monkeypatch.setattr(task_status_route, "is_task_accessible", _true)
+    monkeypatch.setattr(task_status_route, "is_task_link_accessible", _true)
 
 
 class _FakeResult:

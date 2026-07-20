@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-# TODO(二期): 本文件的任务/任务关联接口按 GenerationTaskLink.relation_type 多态引用
-# project/chapter/shot/character/prop/... 之一，没有统一外键，无法用现有 ownership 助手
-# 直接解析归属。一期只依赖路由级"必须登录"门禁（见 app/api/v1/__init__.py 里
-# film 路由的 dependencies=[Depends(get_current_user)]），不做精确的项目归属校验——
-# 已知残留风险：登录用户之间可互相查询/操作彼此的任务状态与任务关联，但操作对象是
-# 任务执行状态本身，不是项目数据内容。二期需按 relation_type 分支 join 到 project 校验。
+# 阶段四 4.1：任务/任务关联接口按 GenerationTaskLink.relation_type 多态引用
+# chapter/shot/scene/prop/costume/actor/character 等，没有统一外键。归属校验统一走
+# app/services/auth/task_link_ownership.py（按 relation_type 分支反查到 Project.owner_id，
+# 复用 ownership.py 的 assert_* 助手）。单条接口越权即 404，两个列表接口页内过滤。
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -16,9 +14,16 @@ from pydantic import BaseModel, Field
 from app.api.utils import apply_order, paginate
 from app.core.task_manager import SqlAlchemyTaskStore
 from app.core.task_manager.types import TaskStatus
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
+from app.models.auth import User
 from app.models.task_links import GenerationTaskLink
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
+from app.services.auth.task_link_ownership import (
+    assert_task_link_owned,
+    assert_task_owned,
+    is_task_accessible,
+    is_task_link_accessible,
+)
 from app.services.common import entity_not_found
 from app.tasks.execute_task import revoke_task_execution
 
@@ -84,6 +89,7 @@ class GenerationTaskLinkRead(GenerationTaskLinkBase):
 )
 async def list_tasks(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     statuses: list[TaskStatus] | None = Query(None, description="按任务状态过滤，可多选"),
     task_kind: str | None = Query(None, description="按 task_kind 过滤"),
     relation_type: str | None = Query(None, description="按 relation_type 过滤"),
@@ -102,6 +108,9 @@ async def list_tasks(
         page=page,
         page_size=page_size,
     )
+    # 页内归属过滤：只保留当前用户可见的任务。total 仍是过滤前的值（不改上游 store 的代价，
+    # 会略偏大；本接口前端未使用，仅防跨用户信息泄露）。
+    items = [item for item in items if await is_task_accessible(db, task_id=item.id, current_user=current_user)]
     return paginated_response(
         [
             TaskListItemRead(
@@ -140,7 +149,9 @@ async def list_tasks(
 async def get_task_status(
     task_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskStatusRead]:
+    await assert_task_owned(db, task_id=task_id, current_user=current_user)
     store = SqlAlchemyTaskStore(db)
     view = await store.get_status_view(task_id)
     if view is None:
@@ -167,7 +178,9 @@ async def get_task_status(
 async def get_task_result(
     task_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskResultRead]:
+    await assert_task_owned(db, task_id=task_id, current_user=current_user)
     store = SqlAlchemyTaskStore(db)
     rec = await store.get(task_id)
     if rec is None:
@@ -197,7 +210,9 @@ async def cancel_task(
     task_id: str,
     body: TaskCancelRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskCancelRead]:
+    await assert_task_owned(db, task_id=task_id, current_user=current_user)
     store = SqlAlchemyTaskStore(db)
     rec = await store.request_cancel(task_id, body.reason)
     if rec is None:
@@ -228,6 +243,7 @@ async def cancel_task(
 async def adopt_task_link(
     body: TaskLinkAdoptRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[TaskLinkAdoptRead]:
     target_type, entity_id = ensure_single_bind_target(body)
 
@@ -241,6 +257,8 @@ async def adopt_task_link(
 
     if link is None:
         raise HTTPException(status_code=404, detail=entity_not_found("Task link"))
+
+    await assert_task_link_owned(db, link=link, current_user=current_user)
 
     if str(link.status) == "accepted":
         raise HTTPException(
@@ -270,6 +288,7 @@ async def adopt_task_link(
 )
 async def list_task_links(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     resource_type: str | None = Query(None, description="按 resource_type 过滤"),
     relation_type: str | None = Query(None, description="按 relation_type 过滤"),
     relation_entity_id: str | None = Query(None, description="按 relation_entity_id 过滤"),
@@ -300,6 +319,8 @@ async def list_task_links(
         default="updated_at",
     )
     items, total = await paginate(db, stmt=stmt, page=page, page_size=page_size)
+    # 页内归属过滤：只保留当前用户可见的关联。total 仍是过滤前的值（同 list_tasks，前端未使用本接口）。
+    items = [x for x in items if await is_task_link_accessible(db, link=x, current_user=current_user)]
     return paginated_response(
         [GenerationTaskLinkRead.model_validate(x) for x in items],
         page=page,
@@ -317,6 +338,7 @@ async def list_task_links(
 async def create_task_link(
     body: GenerationTaskLinkCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[GenerationTaskLinkRead]:
     link = GenerationTaskLink(
         task_id=body.task_id,
@@ -326,6 +348,8 @@ async def create_task_link(
         file_id=body.file_id,
         status=body.status,
     )
+    # 校验将要关联的业务实体归属当前用户，防止把任务链接到他人的项目/资产
+    await assert_task_link_owned(db, link=link, current_user=current_user)
     db.add(link)
     await db.flush()
     await db.refresh(link)
@@ -340,10 +364,12 @@ async def create_task_link(
 async def get_task_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[GenerationTaskLinkRead]:
     link = await db.get(GenerationTaskLink, link_id)
     if link is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("Task link"))
+    await assert_task_link_owned(db, link=link, current_user=current_user)
     return success_response(GenerationTaskLinkRead.model_validate(link))
 
 
@@ -356,10 +382,12 @@ async def update_task_link(
     link_id: int,
     body: GenerationTaskLinkUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[GenerationTaskLinkRead]:
     link = await db.get(GenerationTaskLink, link_id)
     if link is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("Task link"))
+    await assert_task_link_owned(db, link=link, current_user=current_user)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(link, k, v)
     await db.flush()
@@ -375,10 +403,12 @@ async def update_task_link(
 async def delete_task_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ApiResponse[None]:
     link = await db.get(GenerationTaskLink, link_id)
     if link is None:
         return empty_response()
+    await assert_task_link_owned(db, link=link, current_user=current_user)
     await db.delete(link)
     await db.flush()
     return empty_response()
