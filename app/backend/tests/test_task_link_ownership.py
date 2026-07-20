@@ -248,8 +248,9 @@ def test_unknown_relation_type_is_forbidden() -> None:
 # --- 公共资产 vs 归属资产（image 系反查）---
 
 
-def test_public_scene_image_task_visible_to_any_user() -> None:
-    """scene.project_id 为空 = 公共资产，任何登录用户可见。"""
+def test_null_project_scene_image_task_not_visible() -> None:
+    """P3 起 project_id 为空不再视为公共资产（历史公共资产已清理）：
+    这类 scene image 反查任务对任何用户都不可见，返回 404。"""
     h = _Harness()
     h.seed(
         _scene("scene-pub", None),
@@ -261,7 +262,7 @@ def test_public_scene_image_task_visible_to_any_user() -> None:
         resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
-    assert resp.status_code == 200
+    assert resp.status_code == 404
 
 
 def test_owned_scene_image_task_hidden_from_others() -> None:

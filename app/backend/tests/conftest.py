@@ -59,8 +59,9 @@ class AlwaysOwnedGetMixin:
         if model in {ShotExtractedCandidate, ShotExtractedDialogueCandidate}:
             return SimpleNamespace(id=entity_id, shot_id="shot-1")
         if model in {Character, Scene, Prop, Costume, Actor}:
-            # 测试里不关心这几类可空 project_id 资产的归属，一律当公共资产放行。
-            return SimpleNamespace(id=entity_id, project_id=None)
+            # 测试里不关心这几类资产的归属细节，挂到属于 TEST_USER_ID 的项目上放行
+            # （P3 起 project_id 必非空，Project 分支对任意 id 都返回 TEST_USER_ID 所有）。
+            return SimpleNamespace(id=entity_id, project_id=f"{entity_id}::project")
         return None
 
 

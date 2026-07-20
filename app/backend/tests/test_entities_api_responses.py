@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_db
 from app.main import app
-from app.models.studio import Actor, ProjectStyle, ProjectVisualStyle
+from app.models.studio import Actor, Project, ProjectStyle, ProjectVisualStyle
+from tests.conftest import TEST_USER_ID
 
 
 class _FakeResult:
@@ -34,6 +36,9 @@ class _FakeEntityDB:
     async def get(self, model: type, entity_id):  # noqa: ANN401
         if model is Actor:
             return self.actors.get(entity_id)
+        if model is Project:
+            # 归属校验：actor 挂到属于 TEST_USER_ID 的项目上，让 assert_entity_owned 放行
+            return SimpleNamespace(id=entity_id, owner_id=TEST_USER_ID)
         return None
 
     def add(self, obj: object) -> None:
@@ -117,6 +122,7 @@ def test_delete_actor_entity_returns_empty_envelope(client: TestClient) -> None:
         view_count=1,
         style=ProjectStyle.real_people_city,
         visual_style=ProjectVisualStyle.live_action,
+        project_id="proj-1",
     )
     actor.created_at = datetime.now(UTC)
     actor.updated_at = actor.created_at

@@ -2,8 +2,8 @@
 
 - 直接挂 project_id 的端点：用 `require_project_owner` 作为 FastAPI 依赖。
 - 经 chapter/shot 间接挂靠的端点：`require_project_access_via_chapter` / `_via_shot`。
-- 可空 project_id 的四类历史全局资产（scene/prop/costume/actor）：`assert_entity_owned`，
-  project_id 为空视为公共资产，登录用户均可访问；Character（project_id 非空）必须校验归属。
+- 四类资产（scene/prop/costume/actor）与 Character：`assert_entity_owned`，
+  一律按项目归属校验（P3 起 project_id 已 NOT NULL，无公共资产放行分支）。
 """
 
 from __future__ import annotations
@@ -95,7 +95,11 @@ async def require_project_access_via_shot(
 
 
 async def assert_entity_owned(db: AsyncSession, *, entity_type: str, entity_id: str, current_user: User) -> object:
-    """entity_type 为 character/scene/prop/costume/actor 之一；project_id 为空视为公共资产放行。"""
+    """entity_type 为 character/scene/prop/costume/actor 之一；一律按项目归属校验。
+
+    多租户 M2 P3 起，四类资产的 project_id 已转 NOT NULL、历史公共资产已清理，
+    不再有"project_id 为空视为公共资产放行"分支。
+    """
     model = ENTITY_MODEL_BY_TYPE.get(entity_type)
     if model is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"unsupported entity_type: {entity_type}")
@@ -103,8 +107,7 @@ async def assert_entity_owned(db: AsyncSession, *, entity_type: str, entity_id: 
     obj = await db.get(model, entity_id)
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found(display_name))
-    if obj.project_id is not None:
-        await assert_project_owned(db, project_id=obj.project_id, current_user=current_user, not_found_name=display_name)
+    await assert_project_owned(db, project_id=obj.project_id, current_user=current_user, not_found_name=display_name)
     return obj
 
 
