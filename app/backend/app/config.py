@@ -89,10 +89,21 @@ class Settings(BaseSettings):
     # 可选：对外访问基址（CDN 或自定义域名），为空则使用 S3 自带 URL 或预签名 URL
     s3_public_base_url: str | None = None
 
+    def _assert_cors_safe(self) -> None:
+        """CORS 启动期 fail-fast：main.py 固定 allow_credentials=True，此时 origins
+        含通配 * 既被浏览器拒发凭证、又等同放开全网，必须直接拒绝而非静默降级。
+        真实域名请逐个列入 CORS_ORIGINS（逗号分隔或 JSON 数组）。"""
+        if "*" in self.cors_origins_list:
+            raise ValueError(
+                "CORS_ORIGINS 不允许通配 '*'（凭证模式下无效且等同放开全网）；"
+                "请逐个列出真实前端域名，如 https://app.example.com"
+            )
+
     def model_post_init(self, __context: object) -> None:
         if not self.celery_broker_url or not str(self.celery_broker_url).strip():
             password_part = f":{self.redis_password}@" if self.redis_password else ""
             self.celery_broker_url = f"redis://{password_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        self._assert_cors_safe()
 
 
 settings = Settings()
