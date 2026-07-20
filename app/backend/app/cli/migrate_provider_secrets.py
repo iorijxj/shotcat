@@ -14,24 +14,35 @@ import argparse
 import asyncio
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.db import async_session_maker
 from app.models.llm import Provider
 
 
+async def encrypt_all_providers(db: AsyncSession, *, assign_owner: str | None = None) -> int:
+    """把所有 Provider 的 api_key/api_secret 用当前密钥加密写回（幂等），可选回填 created_by，返回处理数。
+
+    关键：强制 `flag_modified` 标记这两列为 dirty，flush 时 EncryptedSecret 才会加密写回。
+    不能只靠 `provider.api_key = provider.api_key`——读出的是解密/透传后的明文，赋回相同值时
+    SQLAlchemy 判定无变化、不会 UPDATE，存量明文就永远不会被加密。
+    """
+    providers = list((await db.execute(select(Provider))).scalars().all())
+    for provider in providers:
+        flag_modified(provider, "api_key")
+        flag_modified(provider, "api_secret")
+        if assign_owner and not provider.created_by:
+            provider.created_by = assign_owner
+    return len(providers)
+
+
 async def _migrate(*, assign_owner: str | None) -> None:
     async with async_session_maker() as db:
-        providers = list((await db.execute(select(Provider))).scalars().all())
-        for provider in providers:
-            # 读取（EncryptedSecret 会自动解密，或对存量明文原样透传）后原样重新赋值，
-            # 标记该列为 dirty；flush 时 EncryptedSecret 会用新方式加密写回。
-            provider.api_key = provider.api_key
-            provider.api_secret = provider.api_secret
-            if assign_owner and not provider.created_by:
-                provider.created_by = assign_owner
+        count = await encrypt_all_providers(db, assign_owner=assign_owner)
         await db.commit()
         suffix = f"，created_by 已回填为 {assign_owner}" if assign_owner else ""
-        print(f"已处理 {len(providers)} 个 Provider：api_key/api_secret 已确保加密存储{suffix}")
+        print(f"已处理 {count} 个 Provider：api_key/api_secret 已确保加密存储{suffix}")
 
 
 def main() -> None:
