@@ -179,6 +179,8 @@ if not exist "%BACKEND_DIR%\.env" (
         echo S3_ACCESS_KEY_ID=!RUSTFS_ACCESS_KEY!
         echo S3_SECRET_ACCESS_KEY=!RUSTFS_SECRET_KEY!
         echo S3_BUCKET_NAME=!S3_BUCKET_NAME!
+        echo # 本机防火墙内开发对接本地 docker 基础设施（弱口令合法），显式豁免弱口令校验。
+        echo ALLOW_WEAK_SECRETS=true
     ) >> "%BACKEND_DIR%\.env"
     echo [install] created %BACKEND_DIR%\.env from example, pointed at local docker infra
 ) else (

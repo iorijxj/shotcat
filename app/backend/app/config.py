@@ -9,6 +9,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = BACKEND_ROOT / ".env"
 
+# 随仓库下发的默认值 + 常见弱口令（精确匹配，大小写不敏感）。含 "change-me" 词根的
+# 占位符（如 change-me-to-a-random-secret）由子串规则统一命中，不必逐一列举。
+_WEAK_SECRET_EXACT = frozenset(
+    {"rustfsadmin", "changeme", "password", "admin", "root", "secret", "123456", "test"}
+)
+
+
+def _is_weak_secret(value: str | None) -> bool:
+    if not value:
+        return False
+    lowered = value.strip().lower()
+    return "change-me" in lowered or lowered in _WEAK_SECRET_EXACT
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -45,6 +58,11 @@ class Settings(BaseSettings):
 
     # LLM Provider api_key/api_secret 静态加密密钥（Fernet），必须由环境变量提供
     provider_secret_enc_key: str
+
+    # 弱口令启动校验（公众化 M1）：安全默认为 False，检测到随仓库下发的默认/弱口令
+    # （DB 口令 / S3 键 / Redis 口令 / JWT 密钥 / Provider 加密密钥）即拒绝启动。
+    # 本机防火墙内开发对接本地 docker 基础设施时用 ALLOW_WEAK_SECRETS=true 显式豁免。
+    allow_weak_secrets: bool = False
 
     # 登录防暴力破解（安全整改阶段三 3.1）：同一用户名/IP 在锁定窗口内连续失败
     # 达到阈值即锁定 login_lockout_seconds。IP 阈值故意更高：经 Caddy 反代时
@@ -99,11 +117,36 @@ class Settings(BaseSettings):
                 "请逐个列出真实前端域名，如 https://app.example.com"
             )
 
+    def _assert_no_weak_secrets(self) -> None:
+        """弱口令启动期 fail-fast：检测后端实际拿到的敏感凭证是否仍是仓库默认/弱口令。
+        安全默认为 False；本机防火墙内开发用 ALLOW_WEAK_SECRETS=true 显式豁免。"""
+        if self.allow_weak_secrets:
+            return
+        from urllib.parse import urlparse
+
+        db_password = urlparse(self.database_url).password
+        candidates = {
+            "DATABASE_URL（数据库口令）": db_password,
+            "S3_ACCESS_KEY_ID": self.s3_access_key_id,
+            "S3_SECRET_ACCESS_KEY": self.s3_secret_access_key,
+            "REDIS_PASSWORD": self.redis_password,
+            "AUTH_JWT_SECRET（JWT 密钥）": self.auth_jwt_secret,
+            "PROVIDER_SECRET_ENC_KEY": self.provider_secret_enc_key,
+        }
+        weak = [name for name, value in candidates.items() if _is_weak_secret(value)]
+        if weak:
+            raise ValueError(
+                "检测到默认/弱口令，拒绝启动（公众化 M1）: " + "、".join(weak) + "。"
+                "请改为随机强口令；仅本机防火墙内开发对接本地基础设施时"
+                "可设 ALLOW_WEAK_SECRETS=true 显式豁免。"
+            )
+
     def model_post_init(self, __context: object) -> None:
         if not self.celery_broker_url or not str(self.celery_broker_url).strip():
             password_part = f":{self.redis_password}@" if self.redis_password else ""
             self.celery_broker_url = f"redis://{password_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
         self._assert_cors_safe()
+        self._assert_no_weak_secrets()
 
 
 settings = Settings()

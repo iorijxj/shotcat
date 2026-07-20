@@ -55,6 +55,8 @@ services:
       S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
       S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      # 弱口令启动校验开关（公众化 M1）：默认 false=强制强口令；LAN 防火墙内可设 true
+      ALLOW_WEAK_SECRETS: ${ALLOW_WEAK_SECRETS:-false}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:7788,http://127.0.0.1:7788}
       # 可选
@@ -106,6 +108,8 @@ services:
       S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
       S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      # 弱口令启动校验开关（公众化 M1）：默认 false=强制强口令；LAN 防火墙内可设 true
+      ALLOW_WEAK_SECRETS: ${ALLOW_WEAK_SECRETS:-false}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:7788,http://127.0.0.1:7788}
       # 可选
@@ -145,6 +149,8 @@ services:
       S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
       S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      # 弱口令启动校验开关（公众化 M1）：默认 false=强制强口令；LAN 防火墙内可设 true
+      ALLOW_WEAK_SECRETS: ${ALLOW_WEAK_SECRETS:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:7788,http://127.0.0.1:7788}
       OPENAI_API_KEY: ${OPENAI_API_KEY-}
     depends_on:
