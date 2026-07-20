@@ -1,5 +1,8 @@
 * text=auto
 
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 *.sh text eol=lf
 Dockerfile text eol=lf
 *.Dockerfile text eol=lf
