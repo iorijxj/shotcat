@@ -4,11 +4,11 @@ from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueCon
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
-from app.models.base import TimestampMixin
+from app.models.base import TenantScopedMixin, TimestampMixin
 from app.models.types import ProjectStyle, ProjectVisualStyle
 
 
-class Scene(Base, TimestampMixin):
+class Scene(Base, TimestampMixin, TenantScopedMixin):
     """场景表。"""
 
     __tablename__ = "scenes"
@@ -60,7 +60,7 @@ class Scene(Base, TimestampMixin):
     )
 
 
-class Prop(Base, TimestampMixin):
+class Prop(Base, TimestampMixin, TenantScopedMixin):
     """道具表。角色道具绑定见 CharacterPropLink。"""
 
     __tablename__ = "props"
@@ -117,7 +117,7 @@ class Prop(Base, TimestampMixin):
     )
 
 
-class Costume(Base, TimestampMixin):
+class Costume(Base, TimestampMixin, TenantScopedMixin):
     """服装表。角色服装见 Character.costume_id。"""
 
     __tablename__ = "costumes"
@@ -170,7 +170,7 @@ class Costume(Base, TimestampMixin):
     )
 
 
-class Actor(Base, TimestampMixin):
+class Actor(Base, TimestampMixin, TenantScopedMixin):
     """演员表（与角色区分）。
 
     说明：
@@ -228,7 +228,7 @@ class Actor(Base, TimestampMixin):
     )
 
 
-class Character(Base, TimestampMixin):
+class Character(Base, TimestampMixin, TenantScopedMixin):
     """角色表（归属项目）。
 
     组成约定：

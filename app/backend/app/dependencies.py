@@ -49,12 +49,15 @@ async def get_current_tenant(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TenantContext:
-    """解析当前请求的活跃租户（多租户 M2 P0）。
+    """解析当前请求的活跃租户，并把 tenant_id 写入 session.info（多租户 M2 P2）。
 
-    P0 只提供依赖本体与单测，尚未接入 api/v1 门禁、也不写 session.info（P2/P4）。
+    session.info["tenant_id"] 供 core/db.py 的 before_flush 盖章事件读取（P4 再加读过滤）。
+    本依赖尚未接入 api/v1 门禁（P4 切换），当前仅在显式依赖它的路由/测试中生效。
     换外部认证时身份仍从 get_current_user 单一出口来，这里的解析分支随之调整即可。
     """
-    return await resolve_active_tenant(db, current_user)
+    ctx = await resolve_active_tenant(db, current_user)
+    db.info["tenant_id"] = ctx.tenant_id
+    return ctx
 
 
 async def get_llm(db: AsyncSession = Depends(get_db)) -> BaseChatModel:

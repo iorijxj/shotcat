@@ -15,7 +15,7 @@ from sqlalchemy.types import TypeDecorator
 
 from app.core.db import Base
 from app.core.secret_crypto import decrypt_secret_or_passthrough, encrypt_secret
-from app.models.base import TimestampMixin
+from app.models.base import TenantScopedMixin, TimestampMixin
 
 
 class EncryptedSecret(TypeDecorator):
@@ -74,7 +74,7 @@ class LogLevel(str, Enum):
     error = "error"
 
 
-class Provider(Base, TimestampMixin):
+class Provider(Base, TimestampMixin, TenantScopedMixin):
     """模型供应商配置。
 
     安全提示：
@@ -126,7 +126,7 @@ class Provider(Base, TimestampMixin):
     )
 
 
-class Model(Base, TimestampMixin):
+class Model(Base, TimestampMixin, TenantScopedMixin):
     """具体模型实例（绑定供应商、类别与参数）。"""
 
     __tablename__ = "models"

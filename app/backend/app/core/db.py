@@ -9,9 +9,13 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 
 from app.config import settings
+
+
+class CrossTenantWriteError(RuntimeError):
+    """向 session 租户上下文之外写入聚合根：不可能的越权写，直接拒绝。"""
 
 
 def _build_engine() -> AsyncEngine:
@@ -85,6 +89,31 @@ class Base(DeclarativeBase):
     """所有 ORM 模型的基类。"""
 
     pass
+
+
+@event.listens_for(Session, "before_flush")
+def _stamp_tenant_on_flush(session: Session, _flush_context: object, _instances: object) -> None:
+    """聚合根写入盖章（多租户 M2 P2）。
+
+    仅当 session 带租户上下文（get_current_tenant 已写 session.info["tenant_id"]）时生效：
+    新增聚合根未带 tenant_id 则自动盖上；显式带了且与上下文不一致则拒绝（越权写）。
+    无租户上下文（CLI/Celery/未接入门禁的测试）一律放行，保证既有行为不变。
+    读过滤在 P4 单独打开。
+    """
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id is None:
+        return
+    from app.models.base import TenantScopedMixin
+
+    for obj in session.new:
+        if not isinstance(obj, TenantScopedMixin):
+            continue
+        if obj.tenant_id is None:
+            obj.tenant_id = tenant_id
+        elif obj.tenant_id != tenant_id:
+            raise CrossTenantWriteError(
+                f"拒绝跨租户写入：对象 tenant_id={obj.tenant_id!r} 与当前上下文 {tenant_id!r} 不一致"
+            )
 
 
 async def init_db() -> None:

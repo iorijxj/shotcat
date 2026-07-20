@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, Text, 
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
-from app.models.base import TimestampMixin
+from app.models.base import TenantScopedMixin, TimestampMixin
 from app.models.types import ChapterStatus, ProjectStyle, ProjectVisualStyle
 
 if TYPE_CHECKING:
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from app.models.studio_shots import Shot
 
 
-class Project(Base, TimestampMixin):
+class Project(Base, TimestampMixin, TenantScopedMixin):
     """项目表。
 
     说明：
