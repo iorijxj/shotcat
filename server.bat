@@ -194,6 +194,14 @@ if defined TLS_DIRECTIVE >>"%CADDYFILE%" echo     !TLS_DIRECTIVE!
 >>"%CADDYFILE%" echo         basic_auth {
 >>"%CADDYFILE%" echo             !CADDY_BASIC_AUTH_USER! !CADDY_BASIC_AUTH_HASH!
 >>"%CADDYFILE%" echo         }
+REM Upload size backstop (security stage 3, item 3.2): the backend enforces
+REM the precise per-type limits (2MB image / 5MB video); this gateway-level
+REM cap (limit + multipart overhead headroom) just stops oversized bodies
+REM from ever reaching the backend.
+>>"%CADDYFILE%" echo         @upload path /api/v1/studio/files/upload
+>>"%CADDYFILE%" echo         request_body @upload {
+>>"%CADDYFILE%" echo             max_size 10MB
+>>"%CADDYFILE%" echo         }
 >>"%CADDYFILE%" echo         reverse_proxy !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
 >>"%CADDYFILE%" echo     }
 >>"%CADDYFILE%" echo }
@@ -221,6 +229,12 @@ if defined TLS_DIRECTIVE >>"%CADDYFILE%" echo     !TLS_DIRECTIVE!
 >>"%CADDYFILE%" echo     route {
 >>"%CADDYFILE%" echo         basic_auth {
 >>"%CADDYFILE%" echo             !CADDY_BASIC_AUTH_USER! !CADDY_BASIC_AUTH_HASH!
+>>"%CADDYFILE%" echo         }
+REM Same upload size backstop as the backend site above -- the workbench
+REM uploads through this site's /api/* proxy, so both entrances need it.
+>>"%CADDYFILE%" echo         @upload path /api/v1/studio/files/upload
+>>"%CADDYFILE%" echo         request_body @upload {
+>>"%CADDYFILE%" echo             max_size 10MB
 >>"%CADDYFILE%" echo         }
 >>"%CADDYFILE%" echo         reverse_proxy /api/* !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
 >>"%CADDYFILE%" echo         reverse_proxy /pipeline/* 127.0.0.1:5280

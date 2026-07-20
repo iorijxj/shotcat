@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1 import router as api_v1_router
 from app.bootstrap import bootstrap_all_registries
 from app.config import settings
+from app.core.rate_limit import GenerationRateLimitMiddleware
 from app.core.storage import LOCAL_STORAGE_ROOT
 from app.schemas.common import ApiResponse
 
@@ -87,6 +88,10 @@ app = FastAPI(
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(Exception, http_exception_handler)
+
+# AI 生成类接口限流（安全整改阶段三 3.4）；先于 CORS 注册，使 CORS 处于外层、
+# 429 响应也带 CORS 头。端点清单与实现见 app/core/rate_limit.py。
+app.add_middleware(GenerationRateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

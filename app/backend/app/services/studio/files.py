@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
+from app.config import settings
 from app.core import storage
 from app.models.studio import FileItem, FileType
 from app.schemas.common import ApiResponse, PaginatedData, paginated_response
@@ -23,6 +24,13 @@ from app.services.common import create_and_refresh, entity_not_found, flush_and_
 from app.services.studio.file_usages import upsert_file_usage
 
 FILE_ORDER_FIELDS = {"name", "created_at", "updated_at"}
+
+_MB = 1024 * 1024
+
+
+def _max_upload_bytes(file_type: FileType) -> int:
+    limit_mb = settings.upload_max_image_mb if file_type == FileType.image else settings.upload_max_video_mb
+    return limit_mb * _MB
 
 
 def _detect_file_type(filename: str) -> FileType:
@@ -146,7 +154,11 @@ async def upload_file(
 
     file_type = _detect_file_type(file.filename)
     display_name = _build_display_name(file.filename, name)
-    content = await file.read()
+    # 只读到"上限 + 1 字节"即可判定超限，避免为将被拒绝的大文件耗费整块内存
+    max_bytes = _max_upload_bytes(file_type)
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"文件超过大小上限 {max_bytes // _MB}MB")
 
     key = f"files/{file.filename}"
     info = await storage.upload_file(

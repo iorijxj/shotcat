@@ -64,6 +64,17 @@ class AlwaysOwnedGetMixin:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _reset_generation_rate_limit():
+    """生成类限流按进程内存计数；测试不带 token 时统一落到 client IP 维度，
+    跨测试累计会误触 429，故每个测试前后重置。"""
+    from app.core.rate_limit import reset_generation_rate_limit
+
+    reset_generation_rate_limit()
+    yield
+    reset_generation_rate_limit()
+
+
 @pytest.fixture
 def client() -> TestClient:
     """FastAPI 应用 TestClient，用于集成测试。默认已登录（见 TEST_USER_ID）。"""

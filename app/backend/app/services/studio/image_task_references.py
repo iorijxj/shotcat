@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import mimetypes
 
 from fastapi import HTTPException, status
@@ -50,9 +51,13 @@ async def resolve_reference_image_refs_by_file_ids(
         try:
             content = await storage.download_file(key=file_obj.storage_key)
         except Exception as exc:  # noqa: BLE001
+            # 存储层异常原文可能含 endpoint/bucket 等内部信息，只进服务端日志，不回给前端
+            logging.getLogger(__name__).warning(
+                "下载参考图失败 file_id=%s key=%s: %s", file_id, file_obj.storage_key, exc
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Failed to download file for file_id={file_id}: {exc}",
+                detail=f"Failed to download file for file_id={file_id}",
             ) from exc
         if not content:
             raise HTTPException(

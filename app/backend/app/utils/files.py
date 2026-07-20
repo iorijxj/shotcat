@@ -11,6 +11,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
+from app.core.ssrf_guard import assert_response_addr_allowed, assert_url_allowed
 from app.models.studio import FileItem, FileType
 from app.models.types import FileUsageKind
 
@@ -73,11 +74,19 @@ async def create_file_from_url_or_b64(
     filename: str = ""
 
     if url:
-        client_kwargs: dict = {}
+        # SSRF 防护（安全整改阶段三 3.3）：url 来自供应商返回结果，间接用户可控。
+        # 请求前校验解析 IP；禁用重定向跟随（3xx 直接报错，杜绝"302 跳内网"，
+        # 也修掉了旧行为把重定向空 body 当文件落库的问题）；拿到响应后再校验
+        # 实际连接的对端 IP，封堵 DNS rebinding 窗口。
+        assert_url_allowed(url)
+        client_kwargs: dict = {"follow_redirects": False}
         if httpx_timeout is not None:
             client_kwargs["timeout"] = httpx_timeout
         async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.get(url, headers=url_request_headers or None)
+            if resp.is_redirect:
+                raise ValueError(f"下载地址返回重定向（HTTP {resp.status_code}），出于 SSRF 防护不自动跟随")
+            assert_response_addr_allowed(resp)
             resp.raise_for_status()
             content = resp.content
             content_type = resp.headers.get("Content-Type")

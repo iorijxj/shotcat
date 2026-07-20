@@ -46,6 +46,26 @@ class Settings(BaseSettings):
     # LLM Provider api_key/api_secret 静态加密密钥（Fernet），必须由环境变量提供
     provider_secret_enc_key: str
 
+    # 登录防暴力破解（安全整改阶段三 3.1）：同一用户名/IP 在锁定窗口内连续失败
+    # 达到阈值即锁定 login_lockout_seconds。IP 阈值故意更高：经 Caddy 反代时
+    # client IP 退化为网关地址，IP 维度等效全局兜底，阈值太低会误锁所有人。
+    login_max_failures_per_user: int = 5
+    login_max_failures_per_ip: int = 30
+    login_lockout_seconds: int = 900
+
+    # 文件上传大小上限（安全整改阶段三 3.2），按类型区分，单位 MB。
+    # 仅约束用户手动上传（/studio/files/upload）；AI 生成结果落库走内部下载链路，不受此限。
+    upload_max_image_mb: int = 2
+    upload_max_video_mb: int = 5
+
+    # SSRF 防护开关（安全整改阶段三 3.3）：默认拦截指向内网/本机的下载地址。
+    # 仅本地开发用 localhost mock 供应商时才可临时置 true，任何部署环境保持 false。
+    ssrf_allow_private_targets: bool = False
+
+    # AI 生成类接口限流（安全整改阶段三 3.4）：每登录用户每分钟允许的生成请求数，
+    # 0 表示关闭。清单见 app/core/rate_limit.py。
+    generation_rate_limit_per_minute: int = 10
+
     @property
     def cors_origins_list(self) -> list[str]:
         s = (self.cors_origins or "").strip()
