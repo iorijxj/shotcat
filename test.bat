@@ -36,6 +36,9 @@ for /f "delims=" %%W in ('wsl -- wslpath -a "%ROOT:~0,-1%"') do set "WSL_ROOT=%%
 set "WSL_COMPOSE_DIR=%WSL_ROOT%/app/deploy/compose"
 set "WSL_COMPOSE_ENV=%WSL_COMPOSE_DIR%/.env"
 set "WSL_COMPOSE_FILE=%WSL_COMPOSE_DIR%/docker-compose.yml"
+REM Dev override: publishes mysql/redis/rustfs on 127.0.0.1 for the native
+REM dev flow (base compose publishes no host ports at all; see the file).
+set "WSL_COMPOSE_DEV_FILE=%WSL_COMPOSE_DIR%/docker-compose.dev.yml"
 set "DOCKER=wsl -- docker"
 
 REM Avoid port clashes with a full docker stack started by server.bat.
@@ -47,7 +50,7 @@ for /f %%I in ('%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE
 :conflict_handled
 
 echo [test] ensuring infra containers are up ^(mysql/redis/rustfs^)...
-%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d mysql redis rustfs
+%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" -f "%WSL_COMPOSE_DEV_FILE%" up -d mysql redis rustfs
 if errorlevel 1 (
     echo [test] failed to start infra containers, run install.bat first
     goto :end

@@ -86,6 +86,9 @@ for /f "delims=" %%W in ('wsl -- wslpath -a "%ROOT:~0,-1%"') do set "WSL_ROOT=%%
 set "WSL_COMPOSE_DIR=%WSL_ROOT%/app/deploy/compose"
 set "WSL_COMPOSE_ENV=%WSL_COMPOSE_DIR%/.env"
 set "WSL_COMPOSE_FILE=%WSL_COMPOSE_DIR%/docker-compose.yml"
+REM Dev override: publishes mysql/redis/rustfs on 127.0.0.1 for the native
+REM dev flow (base compose publishes no host ports at all; see the file).
+set "WSL_COMPOSE_DEV_FILE=%WSL_COMPOSE_DIR%/docker-compose.dev.yml"
 set "DOCKER=wsl -- docker"
 
 where uv >nul 2>&1
@@ -154,6 +157,7 @@ if not defined MYSQL_PASSWORD set "MYSQL_PASSWORD=change-me"
 if not defined MYSQL_DATABASE set "MYSQL_DATABASE=jellyfish"
 if not defined MYSQL_PORT set "MYSQL_PORT=3306"
 if not defined REDIS_PORT set "REDIS_PORT=6379"
+if not defined REDIS_PASSWORD set "REDIS_PASSWORD=change-me"
 if not defined RUSTFS_PORT set "RUSTFS_PORT=9000"
 if not defined RUSTFS_ACCESS_KEY set "RUSTFS_ACCESS_KEY=rustfsadmin"
 if not defined RUSTFS_SECRET_KEY set "RUSTFS_SECRET_KEY=rustfsadmin"
@@ -168,6 +172,7 @@ if not exist "%BACKEND_DIR%\.env" (
         echo REDIS_HOST=localhost
         echo REDIS_PORT=!REDIS_PORT!
         echo REDIS_DB=0
+        echo REDIS_PASSWORD=!REDIS_PASSWORD!
         echo CORS_ORIGINS=http://localhost:5273,http://127.0.0.1:5273
         echo S3_ENDPOINT_URL=http://localhost:!RUSTFS_PORT!
         echo S3_REGION_NAME=us-east-1
@@ -182,7 +187,7 @@ if not exist "%BACKEND_DIR%\.env" (
 
 REM ---- 3. Start infra containers ----
 echo [install] starting infra containers ^(mysql/redis/rustfs^)...
-%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" up -d mysql redis rustfs
+%DOCKER% compose --env-file "%WSL_COMPOSE_ENV%" -f "%WSL_COMPOSE_FILE%" -f "%WSL_COMPOSE_DEV_FILE%" up -d mysql redis rustfs
 if errorlevel 1 (
     echo [install] failed to start infra containers
     goto :end

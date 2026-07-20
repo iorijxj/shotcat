@@ -1,0 +1,20 @@
+# 本地原生开发专用 override（install.bat / test.bat / run.bat 会带上本文件）：
+# backend 不进容器、直接 uv run uvicorn 时，需要从 Windows 宿主机经 WSL2 的
+# localhost relay 访问容器里的 mysql/redis/rustfs，所以在这里发布宿主机端口。
+# 注意不能写成 127.0.0.1: 绑定——实测（2026-07-20，WSL2 NAT 模式）relay 只转发
+# 0.0.0.0 监听，loopback-only 绑定在 Windows 侧 localhost 探测不通。NAT 模式下
+# WSL 子网对 LAN 不可路由，0.0.0.0 也只是本机可达；Redis 另有 requirepass 兜底。
+# server.bat 部署场景只用 base 文件，不加载本文件——部署机上这些端口不存在。
+services:
+  mysql:
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  rustfs:
+    ports:
+      - "${RUSTFS_PORT:-9000}:9000"
+      - "${RUSTFS_CONSOLE_PORT:-9001}:9001"
