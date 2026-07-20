@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import async_session_maker
 from app.models.auth import User
 from app.services.auth.security import decode_access_token
+from app.services.auth.tenants import TenantContext, resolve_active_tenant
 from app.services.llm.resolver import build_default_text_llm
 
 
@@ -42,6 +43,18 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+async def get_current_tenant(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TenantContext:
+    """解析当前请求的活跃租户（多租户 M2 P0）。
+
+    P0 只提供依赖本体与单测，尚未接入 api/v1 门禁、也不写 session.info（P2/P4）。
+    换外部认证时身份仍从 get_current_user 单一出口来，这里的解析分支随之调整即可。
+    """
+    return await resolve_active_tenant(db, current_user)
 
 
 async def get_llm(db: AsyncSession = Depends(get_db)) -> BaseChatModel:
