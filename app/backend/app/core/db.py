@@ -49,6 +49,9 @@ def _configure_sqlite_connection(db_engine: AsyncEngine) -> None:
             cursor.execute("PRAGMA busy_timeout = 30000")
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute("PRAGMA synchronous = NORMAL")
+            # SQLite 默认不强制外键；不开则 ON DELETE CASCADE/SET NULL 全部失效，
+            # 删聚合根会留下 *_images / *_links 孤儿行（多租户 P3 清理依赖级联）。
+            cursor.execute("PRAGMA foreign_keys = ON")
         finally:
             cursor.close()
 
