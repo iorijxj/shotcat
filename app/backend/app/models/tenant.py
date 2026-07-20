@@ -18,9 +18,15 @@ from app.models.base import TimestampMixin
 # 取值集中在此，避免散落的魔法字符串。
 TENANT_KIND_PERSONAL = "personal"
 TENANT_KIND_ORG = "org"
+TENANT_KIND_SYSTEM = "system"
 MEMBERSHIP_ROLE_OWNER = "owner"
 MEMBERSHIP_ROLE_MEMBER = "member"
 MEMBERSHIP_STATUS_ACTIVE = "active"
+
+# 系统兜底租户：承接迁移期解析不到归属的历史孤儿聚合根（无主 project、
+# created_by 空串的 provider 等），使 tenant_id 得以转 NOT NULL（多租户 M2 P4a）。
+SYSTEM_TENANT_ID = "system"
+SYSTEM_TENANT_NAME = "系统兜底租户"
 
 
 class Tenant(Base, TimestampMixin):
@@ -61,7 +67,10 @@ __all__ = [
     "TenantMembership",
     "TENANT_KIND_PERSONAL",
     "TENANT_KIND_ORG",
+    "TENANT_KIND_SYSTEM",
     "MEMBERSHIP_ROLE_OWNER",
     "MEMBERSHIP_ROLE_MEMBER",
     "MEMBERSHIP_STATUS_ACTIVE",
+    "SYSTEM_TENANT_ID",
+    "SYSTEM_TENANT_NAME",
 ]
