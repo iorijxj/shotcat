@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 from app.cli.purge_public_assets import PublicActorStillReferencedError, purge_public_assets
 from app.core.db import Base
 from app.models.auth import User
+from tests.conftest import assets_project_id_nullable
 from app.models.studio import (
     Actor,
     Chapter,
@@ -58,8 +59,9 @@ async def _build_session() -> tuple[AsyncSession, object]:
         cursor.close()
 
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    with assets_project_id_nullable():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     return session_local(), engine
 
 

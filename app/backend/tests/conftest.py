@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,27 @@ except Exception:  # noqa: BLE001
 # 统一伪造一个登录用户，各测试文件的 Fake DB 里凡是需要归属校验通过的 Project，
 # owner_id 都应设为这个 id（见各文件 _seed_project 之类的 helper）。
 TEST_USER_ID = "test-user"
+
+
+@contextmanager
+def assets_project_id_nullable():
+    """create_all 期间临时把四类资产 project_id 设为可空（还原在 finally）。
+
+    P3 把 scene/prop/costume/actor 的 project_id 转成了 NOT NULL；但清理前的
+    export/purge/backfill 等迁移 CLI 本就跑在"迁移前的旧库"上（project_id 尚可空、
+    仍有 NULL 残留）。这些 CLI 的测试需要建出旧 schema 才能塞 NULL 行验证清理逻辑。
+    """
+    from app.models.studio import Actor, Costume, Prop, Scene
+
+    cols = [m.__table__.c.project_id for m in (Scene, Prop, Costume, Actor)]
+    originals = [c.nullable for c in cols]
+    for col in cols:
+        col.nullable = True
+    try:
+        yield
+    finally:
+        for col, original in zip(cols, originals):
+            col.nullable = original
 
 
 class AlwaysOwnedGetMixin:

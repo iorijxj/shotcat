@@ -1,7 +1,7 @@
 """阶段四 4.1 跨用户越权回归测试：GenerationTaskLink 任务链接系统的多态归属校验。
 
-用户 A 的任务/任务关联，用户 B 必须查不到、改不了、删不掉；project_id 为空的历史资产
-（scene/prop/costume/actor）视为公共资产，登录用户均可访问。用真实内存 SQLite（同
+用户 A 的任务/任务关联，用户 B 必须查不到、改不了、删不掉。P3 起 project_id 为空的
+历史资产不再视为公共资产（已清理），这类反查一律 404。用真实内存 SQLite（同
 test_project_ownership.py 的模式），让归属反查走真实 SQL。
 """
 
@@ -33,6 +33,7 @@ from app.models.studio import (
 from app.models.task import GenerationDeliveryMode, GenerationTask, GenerationTaskStatus
 from app.models.task_links import GenerationTaskLink, GenerationTaskLinkStatus
 from app.models.types import ShotFrameType
+from tests.conftest import assets_project_id_nullable
 
 USER_A = User(id="user-a", username="alice", password_hash="x")
 USER_B = User(id="user-b", username="bob", password_hash="x")
@@ -129,8 +130,9 @@ class _Harness:
 
     def seed(self, *objs: object) -> None:
         async def _run() -> None:
-            async with self._engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            with assets_project_id_nullable():
+                async with self._engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
             self._maker = async_sessionmaker(self._engine, expire_on_commit=False)
             async with self._maker() as session:
                 for obj in objs:

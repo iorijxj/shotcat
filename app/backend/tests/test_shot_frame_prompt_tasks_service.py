@@ -59,6 +59,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     next_shot = Shot(id="s2", chapter_id="c1", index=2, title="镜头二", script_excerpt="角色停下脚步，盯向走廊尽头。")
     actor = Actor(
         id="actor-1",
+        project_id="p1",
         name="演员甲",
         description="短发、冷峻",
         style=ProjectStyle.real_people_city,
@@ -66,6 +67,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     )
     costume = Costume(
         id="costume-1",
+        project_id="p1",
         name="黑色风衣",
         description="修身长款、利落",
         style=ProjectStyle.real_people_city,
@@ -83,6 +85,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     )
     scene = Scene(
         id="scene-1",
+        project_id="p1",
         name="废弃走廊",
         description="昏暗、潮湿、狭长",
         style=ProjectStyle.real_people_city,
@@ -90,6 +93,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     )
     prop = Prop(
         id="prop-1",
+        project_id="p1",
         name="手电筒",
         description="金属外壳，冷白光束",
         style=ProjectStyle.real_people_city,

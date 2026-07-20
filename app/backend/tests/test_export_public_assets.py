@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.cli.export_public_assets import collect_public_assets, summarize
 from app.core.db import Base
+from tests.conftest import assets_project_id_nullable
 from app.models.studio import (
     Actor,
     Chapter,
@@ -38,8 +39,9 @@ from app.models.types import (
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    with assets_project_id_nullable():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     return session_local(), engine
 
 

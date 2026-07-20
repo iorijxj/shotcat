@@ -576,6 +576,7 @@ async def test_create_project_asset_link_marks_matching_prop_candidate_as_linked
         db.add(
             Prop(
                 id="prop-1",
+                project_id="project-1",
                 name="银斧头",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -616,6 +617,7 @@ async def test_delete_project_asset_link_marks_matching_prop_candidate_back_to_p
         db.add(
             Prop(
                 id="prop-1",
+                project_id="project-1",
                 name="银斧头",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -677,6 +679,7 @@ async def test_update_shot_detail_scene_marks_matching_scene_candidate_as_linked
         db.add(
             Scene(
                 id="scene-1",
+                project_id="project-1",
                 name="河边",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -732,6 +735,7 @@ async def test_update_shot_detail_scene_change_marks_old_candidate_back_to_pendi
             [
                 Scene(
                     id="scene-1",
+                    project_id="project-1",
                     name="河边",
                     description="",
                     style=ProjectStyle.real_people_city,
@@ -741,6 +745,7 @@ async def test_update_shot_detail_scene_change_marks_old_candidate_back_to_pendi
                 ),
                 Scene(
                     id="scene-2",
+                    project_id="project-1",
                     name="山洞",
                     description="",
                     style=ProjectStyle.real_people_city,
@@ -798,6 +803,7 @@ async def test_update_shot_detail_scene_clear_marks_old_candidate_back_to_pendin
         db.add(
             Scene(
                 id="scene-1",
+                project_id="project-1",
                 name="河边",
                 description="",
                 style=ProjectStyle.real_people_city,

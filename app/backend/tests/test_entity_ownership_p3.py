@@ -20,6 +20,7 @@ from app.models.auth import User
 from app.models.studio import Project, Scene
 from app.models.types import ProjectStyle
 from app.services.auth.ownership import assert_entity_owned
+from tests.conftest import assets_project_id_nullable
 
 _STYLE = ProjectStyle.real_people_city
 USER_A = User(id="user-a", username="alice", password_hash="x")
@@ -29,8 +30,9 @@ USER_B = User(id="user-b", username="bob", password_hash="x")
 async def _session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    with assets_project_id_nullable():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     return maker(), engine
 
 

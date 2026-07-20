@@ -38,12 +38,12 @@ class Scene(Base, TimestampMixin, TenantScopedMixin):
         comment="画面表现形式（现实/动漫等）",
     )
 
-    project_id: Mapped[str | None] = mapped_column(
+    project_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
-        comment="所属项目 ID（项目级隔离；历史全局资产可为空）",
+        comment="所属项目 ID（项目级隔离）",
     )
 
     prompt_template: Mapped["PromptTemplate | None"] = relationship()
@@ -90,12 +90,12 @@ class Prop(Base, TimestampMixin, TenantScopedMixin):
         comment="画面表现形式（现实/动漫等）",
     )
 
-    project_id: Mapped[str | None] = mapped_column(
+    project_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
-        comment="所属项目 ID（项目级隔离；历史全局资产可为空）",
+        comment="所属项目 ID（项目级隔离）",
     )
 
     prompt_template: Mapped["PromptTemplate | None"] = relationship()
@@ -147,12 +147,12 @@ class Costume(Base, TimestampMixin, TenantScopedMixin):
         comment="画面表现形式（现实/动漫等）",
     )
 
-    project_id: Mapped[str | None] = mapped_column(
+    project_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
-        comment="所属项目 ID（项目级隔离；历史全局资产可为空）",
+        comment="所属项目 ID（项目级隔离）",
     )
 
     prompt_template: Mapped["PromptTemplate | None"] = relationship()
@@ -205,12 +205,12 @@ class Actor(Base, TimestampMixin, TenantScopedMixin):
         comment="画面表现形式（现实/动漫等）",
     )
 
-    project_id: Mapped[str | None] = mapped_column(
+    project_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
-        comment="所属项目 ID（项目级隔离；历史全局资产可为空）",
+        comment="所属项目 ID（项目级隔离）",
     )
 
     prompt_template: Mapped["PromptTemplate | None"] = relationship()
