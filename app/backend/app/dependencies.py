@@ -49,10 +49,10 @@ async def get_current_tenant(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TenantContext:
-    """解析当前请求的活跃租户，并把 tenant_id 写入 session.info（多租户 M2 P2）。
+    """解析当前请求的活跃租户，并把 tenant_id 写入 session.info（多租户 M2）。
 
-    session.info["tenant_id"] 供 core/db.py 的 before_flush 盖章事件读取（P4 再加读过滤）。
-    本依赖尚未接入 api/v1 门禁（P4 切换），当前仅在显式依赖它的路由/测试中生效。
+    session.info["tenant_id"] 供 core/db.py 的 before_flush 盖章与 do_orm_execute 读过滤
+    读取。P4c 起已作为 api/v1 四个路由组的门禁（api/v1/__init__.py），请求进来即盖好租户。
     换外部认证时身份仍从 get_current_user 单一出口来，这里的解析分支随之调整即可。
     """
     ctx = await resolve_active_tenant(db, current_user)

@@ -29,7 +29,7 @@ class Project(Base, TimestampMixin, TenantScopedMixin):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
-        comment="所属用户 ID（迁移期兼容可为空，上线后需回填存量数据）",
+        comment="创建人用户 ID（可空）；仅审计展示，隔离由 tenant_id 负责，不参与归属过滤（多租户 M2 P4c 降级）",
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False, comment="项目名称")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="项目简介")

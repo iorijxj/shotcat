@@ -162,12 +162,12 @@ def _apply_tenant_read_filter(orm_execute_state: ORMExecuteState) -> None:
 
 @event.listens_for(Session, "before_flush")
 def _stamp_tenant_on_flush(session: Session, _flush_context: object, _instances: object) -> None:
-    """聚合根写入盖章（多租户 M2 P2）。
+    """聚合根写入盖章（多租户 M2）。
 
-    仅当 session 带租户上下文（get_current_tenant 已写 session.info["tenant_id"]）时生效：
-    新增聚合根未带 tenant_id 则自动盖上；显式带了且与上下文不一致则拒绝（越权写）。
-    无租户上下文（CLI/Celery/未接入门禁的测试）一律放行，保证既有行为不变。
-    读过滤在 P4 单独打开。
+    仅当 session 带租户上下文（get_current_tenant 或 worker_tenant_scope 已写
+    session.info["tenant_id"]）时生效：新增聚合根未带 tenant_id 则自动盖上；显式带了
+    且与上下文不一致则拒绝（越权写）。无租户上下文（CLI/迁移脚本）一律放行。
+    与 do_orm_execute 读过滤（P4c）配套构成写盖章 + 读过滤的双层隔离。
     """
     tenant_id = session.info.get("tenant_id")
     if tenant_id is None:

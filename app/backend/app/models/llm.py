@@ -111,7 +111,7 @@ class Provider(Base, TimestampMixin, TenantScopedMixin):
         String(64),
         nullable=False,
         default="",
-        comment="所属用户 ID（服务端从登录态赋值，不信任请求体；空串视为迁移期公共资源）",
+        comment="创建人用户 ID（服务端从登录态赋值，不信任请求体）；仅审计展示，隔离由 tenant_id 负责，空串不再有公共语义（多租户 M2 P4c 降级）",
     )
 
     models: Mapped[list["Model"]] = relationship(

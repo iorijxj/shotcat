@@ -4,8 +4,8 @@
     uv run python -m app.cli.migrate_provider_secrets
     uv run python -m app.cli.migrate_provider_secrets --assign-owner <user_id>
 
-不传 --assign-owner 时只做加密迁移，不动 created_by（保持"迁移期公共资源"语义，
-所有登录用户都能访问，直到手动指定归属）。可重复执行，幂等。
+不传 --assign-owner 时只做加密迁移，不动 created_by（created_by 自 P4c 起仅作审计，
+不再参与隔离——隔离由 tenant_id 负责）。可重复执行，幂等。
 """
 
 from __future__ import annotations
