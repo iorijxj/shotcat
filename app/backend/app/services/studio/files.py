@@ -21,6 +21,7 @@ from app.models.studio import FileItem, FileType
 from app.schemas.common import ApiResponse, PaginatedData, paginated_response
 from app.schemas.studio import FileDetailRead, FileRead, FileUpdate, FileUsageRead, FileUsageWrite
 from app.services.common import create_and_refresh, entity_not_found, flush_and_refresh, get_or_404, patch_model
+from app.services.studio.entity_thumbnails import download_url
 from app.services.studio.file_usages import upsert_file_usage
 
 FILE_ORDER_FIELDS = {"name", "created_at", "updated_at"}
@@ -160,21 +161,22 @@ async def upload_file(
     if len(content) > max_bytes:
         raise HTTPException(status_code=413, detail=f"文件超过大小上限 {max_bytes // _MB}MB")
 
-    key = f"files/{file.filename}"
-    info = await storage.upload_file(
+    file_id = str(uuid.uuid4())
+    ext = Path(file.filename).suffix
+    key = f"files/{uuid.uuid4().hex}{ext}"
+    await storage.upload_file(
         key=key,
         data=content,
         content_type=file.content_type,
-        extra_args={"ACL": "public-read"},
     )
 
     file_item = await create_and_refresh(
         db,
         FileItem(
-            id=str(uuid.uuid4()),
+            id=file_id,
             type=file_type,
             name=display_name,
-            thumbnail=info.url,
+            thumbnail=download_url(file_id),
             tags=[],
             storage_key=key,
         ),

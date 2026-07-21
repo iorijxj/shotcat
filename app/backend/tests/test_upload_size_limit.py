@@ -73,5 +73,5 @@ async def test_image_at_limit_is_accepted(monkeypatch: pytest.MonkeyPatch) -> No
         at_limit = settings.upload_max_image_mb * _MB
         item = await files_service.upload_file(db, file=_upload_file_of("ok.png", at_limit))
         assert item.id
-        assert item.thumbnail == "http://storage/fake"
+        assert item.thumbnail == f"/api/v1/studio/files/{item.id}/download"
     await engine.dispose()

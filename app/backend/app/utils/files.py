@@ -14,6 +14,7 @@ from app.core import storage
 from app.core.ssrf_guard import assert_response_addr_allowed, assert_url_allowed
 from app.models.studio import FileItem, FileType
 from app.models.types import FileUsageKind
+from app.services.studio.entity_thumbnails import download_url
 
 
 async def _infer_file_type_from_ext(ext: str) -> FileType:
@@ -119,11 +120,10 @@ async def create_file_from_url_or_b64(
     display_name = name or os.path.splitext(filename)[0] or filename
 
     key = f"{prefix}/{uuid.uuid4().hex}{ext}"
-    info = await storage.upload_file(
+    await storage.upload_file(
         key=key,
         data=content,
         content_type=content_type,
-        extra_args={"ACL": "public-read"},
     )
 
     file_id = str(uuid.uuid4())
@@ -131,7 +131,7 @@ async def create_file_from_url_or_b64(
         id=file_id,
         type=file_type,
         name=display_name,
-        thumbnail=info.url,
+        thumbnail=download_url(file_id),
         tags=[],
         storage_key=key,
     )

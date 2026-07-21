@@ -135,7 +135,7 @@ async def upload_file(
     - key：逻辑 key（不需要带 base_path，会自动拼接）；
     - data：字节内容或类文件对象；
     - content_type：MIME 类型，例如 image/png；
-    - extra_args：透传给 boto3 的 ExtraArgs，如 {"ACL": "public-read"}。
+    - extra_args：透传给 boto3 的 ExtraArgs；对象默认私有，调用方不应传 public-read 类 ACL。
     """
 
     if is_local_storage_enabled():

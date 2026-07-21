@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import io
+import re
+
 import pytest
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core import storage
 from app.core.db import Base
 from app.models.studio import (
     Chapter,
@@ -15,7 +20,7 @@ from app.models.studio import (
     Shot,
 )
 from app.schemas.studio.files import FileUpdate
-from app.services.studio.files import get_file_detail, list_files_paginated, update_file_meta
+from app.services.studio.files import get_file_detail, list_files_paginated, update_file_meta, upload_file
 
 TENANT_ID = "test-tenant"
 
@@ -167,4 +172,29 @@ async def test_update_file_meta_updates_fields_and_upserts_usage() -> None:
         assert len(detail.usages) == 1
         assert detail.usages[0].usage_kind == FileUsageKind.asset_image
         assert detail.usages[0].source_ref == "slot-1"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_uses_uuid_key_and_proxy_thumbnail(monkeypatch: pytest.MonkeyPatch) -> None:
+    db, engine = await _build_session()
+    async with db:
+        captured: dict = {}
+
+        async def _fake_upload_file(*, key: str, data, content_type=None, extra_args=None):
+            captured["key"] = key
+            captured["extra_args"] = extra_args
+            return storage.StoredFileInfo(key=key, url=f"https://bucket.example/{key}")
+
+        monkeypatch.setattr(storage, "upload_file", _fake_upload_file)
+
+        upload = UploadFile(filename="secret-poster.png", file=io.BytesIO(b"fake-bytes"))
+
+        file_item = await upload_file(db, file=upload)
+
+        assert re.fullmatch(r"files/[0-9a-f]{32}\.png", captured["key"])
+        assert "secret-poster" not in captured["key"]
+        assert not captured["extra_args"]
+        assert file_item.storage_key == captured["key"]
+        assert file_item.thumbnail == f"/api/v1/studio/files/{file_item.id}/download"
     await engine.dispose()
