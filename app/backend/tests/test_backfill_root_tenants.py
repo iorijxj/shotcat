@@ -17,7 +17,7 @@ from app.cli.backfill_root_tenants import (
 )
 from app.core.db import Base
 from app.models.auth import User
-from tests.conftest import assets_project_id_nullable
+from tests.conftest import assets_project_id_nullable, root_tenant_id_nullable
 from app.models.llm import Model, ModelCategoryKey, Provider
 from app.models.studio import Character, Project, Scene
 from app.models.types import ProjectStyle
@@ -26,7 +26,7 @@ from app.models.types import ProjectStyle
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    with assets_project_id_nullable():
+    with assets_project_id_nullable(), root_tenant_id_nullable():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     return session_local(), engine

@@ -9,6 +9,8 @@ from app.core.db import Base
 from app.models.studio import Chapter, Character, Project, ProjectStyle, ProjectVisualStyle, Shot, ShotCharacterLink
 from app.services.studio.entity_crud import create_entity
 
+TENANT_ID = "test-tenant"
+
 
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -19,6 +21,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 
 
 async def _seed_graph(db: AsyncSession) -> None:
+    db.info["tenant_id"] = TENANT_ID
     db.add_all(
         [
             Project(
@@ -27,6 +30,7 @@ async def _seed_graph(db: AsyncSession) -> None:
                 description="",
                 style=ProjectStyle.real_people_city,
                 visual_style=ProjectVisualStyle.live_action,
+                tenant_id=TENANT_ID,
             ),
             Chapter(id="c1", project_id="p1", index=1, title="第一章"),
             Chapter(id="c2", project_id="p1", index=2, title="第二章"),

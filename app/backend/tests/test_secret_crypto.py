@@ -10,6 +10,8 @@ from app.core.db import Base
 from app.core.secret_crypto import decrypt_secret_or_passthrough, encrypt_secret
 from app.models.llm import Provider, ProviderStatus
 
+TENANT_ID = "test-tenant"
+
 
 def test_encrypt_then_decrypt_roundtrips() -> None:
     ciphertext = encrypt_secret("sk-real-secret")
@@ -42,6 +44,7 @@ async def test_provider_api_key_is_encrypted_at_rest_and_transparent_on_read() -
         db.add(
             Provider(
                 id="p-crypto",
+                tenant_id=TENANT_ID,
                 name="OpenAI",
                 base_url="https://api.openai.com/v1",
                 api_key="sk-real-secret",

@@ -1,9 +1,15 @@
-"""项目所有权校验：给各路由复用的辅助函数，统一"不存在或不属于当前用户 -> 404"的判断。
+"""归属校验：给各路由复用的辅助函数，统一"不存在或不属于当前租户 -> 404"的判断。
+
+多租户 M2 P4c 起，隔离维度是**租户**而非单用户：当前租户从 `db.info["tenant_id"]`
+读取（请求路径由 get_current_tenant 盖、后台由 worker_tenant_scope 盖）。函数对外
+签名/404 行为不变（几十处调用点无需改），`current_user` 参数保留仅作兼容，不再参与
+隔离过滤（owner_id/created_by 降级为租户内审计字段）。session 级读过滤是第一层防御，
+这些显式比较是第二层（兜底 identity-map 命中等不触发读过滤的路径）。
 
 - 直接挂 project_id 的端点：用 `require_project_owner` 作为 FastAPI 依赖。
 - 经 chapter/shot 间接挂靠的端点：`require_project_access_via_chapter` / `_via_shot`。
 - 四类资产（scene/prop/costume/actor）与 Character：`assert_entity_owned`，
-  一律按项目归属校验（P3 起 project_id 已 NOT NULL，无公共资产放行分支）。
+  一律按聚合根租户校验（P3 起 project_id 已 NOT NULL，无公共资产放行分支）。
 """
 
 from __future__ import annotations
@@ -35,20 +41,21 @@ _ENTITY_DISPLAY_NAME_BY_TYPE: dict[str, str] = {
 }
 
 
-def _not_owned(project: Project | None, current_user: User) -> bool:
-    return project is None or project.owner_id != current_user.id
+def _wrong_tenant(obj: object | None, tenant_id: str | None) -> bool:
+    return obj is None or getattr(obj, "tenant_id", None) != tenant_id
 
 
 async def assert_project_owned(
     db: AsyncSession,
     *,
     project_id: str,
-    current_user: User,
+    current_user: User,  # noqa: ARG001  保留签名兼容，隔离改由租户维度
     not_found_name: str = "Project",
 ) -> Project:
-    """校验 project_id 归属当前用户；不存在或不属于当前用户一律 404（不用 403，避免暴露资源是否存在）。"""
+    """校验 project_id 归属当前租户；不存在或跨租户一律 404（不用 403，避免暴露资源是否存在）。"""
+    tenant_id = db.info.get("tenant_id")
     project = await db.get(Project, project_id)
-    if _not_owned(project, current_user):
+    if _wrong_tenant(project, tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found(not_found_name))
     return project
 
@@ -111,15 +118,20 @@ async def assert_entity_owned(db: AsyncSession, *, entity_type: str, entity_id: 
     return obj
 
 
-def _provider_not_owned(provider: Provider | None, current_user: User) -> bool:
-    return provider is None or (bool(provider.created_by) and provider.created_by != current_user.id)
+async def assert_provider_owned(
+    db: AsyncSession,
+    *,
+    provider_id: str,
+    current_user: User,  # noqa: ARG001  保留签名兼容，隔离改由租户维度
+) -> Provider:
+    """校验 provider 归属当前租户；不存在或跨租户一律 404。
 
-
-async def assert_provider_owned(db: AsyncSession, *, provider_id: str, current_user: User) -> Provider:
-    """created_by 为空视为迁移期公共资源（历史数据/尚未回填的存量 Provider），登录用户均可访问；
-    非空则必须等于当前用户，否则 404。"""
+    多租户 M2 P4c 起 Provider 是带 tenant_id 的根实体，每租户各配一套（D3），
+    取消 created_by 空串=公共资源的放行语义（历史空串 provider 已在 P4a 归入系统兜底租户）。
+    """
+    tenant_id = db.info.get("tenant_id")
     provider = await db.get(Provider, provider_id)
-    if _provider_not_owned(provider, current_user):
+    if _wrong_tenant(provider, tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("Provider"))
     return provider
 
@@ -132,15 +144,21 @@ async def assert_model_owned(db: AsyncSession, *, model_id: str, current_user: U
     return model
 
 
-async def assert_file_owned(db: AsyncSession, *, file_id: str, current_user: User) -> None:
+async def assert_file_owned(
+    db: AsyncSession,
+    *,
+    file_id: str,
+    current_user: User,  # noqa: ARG001  保留签名兼容，隔离改由租户维度
+) -> None:
     """FileItem 本身无归属，归属信息在 file_usages（同一文件可能挂多条、跨项目）。
-    没有任何关联记录时视为公共（如刚上传、尚未落库使用记录的瞬时状态）；
-    有关联记录时必须至少命中一个当前用户拥有的项目。"""
+    没有任何关联记录时视为瞬时公共（如刚上传、尚未落库使用记录）；
+    有关联记录时必须至少命中一个当前租户的项目。"""
+    tenant_id = db.info.get("tenant_id")
     stmt = select(FileUsage.project_id).where(FileUsage.file_id == file_id).distinct()
     project_ids = [row[0] for row in (await db.execute(stmt)).all()]
     if not project_ids:
         return
-    owned_stmt = select(Project.id).where(Project.id.in_(project_ids), Project.owner_id == current_user.id)
+    owned_stmt = select(Project.id).where(Project.id.in_(project_ids), Project.tenant_id == tenant_id)
     owned = (await db.execute(owned_stmt)).first()
     if owned is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=entity_not_found("File"))

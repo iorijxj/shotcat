@@ -8,7 +8,7 @@
 - shot 系（relation_entity_id 直接是 shot_id）：assert_shot_owned
 - shot_frame_image：relation_entity_id 是 ShotFrameImage.id → shot_detail_id(与 shots.id 共享主键)
 - *_image：relation_entity_id 是各图片表主键(int) → 反查外键实体 → assert_entity_owned
-  （scene/prop/costume/actor 的 project_id 可空视为公共资产放行，character 强制归属）
+  （复用重写后的 assert，自动获得租户隔离语义）
 
 未知 relation_type 或反查不到实体时一律 fail-closed（404），不暴露关联实体类型。
 """

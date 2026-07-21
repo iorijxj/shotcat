@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_db
 from app.main import app
-from tests.conftest import TEST_USER_ID
+from tests.conftest import TEST_TENANT_ID, TEST_USER_ID, FakeSessionInfoMixin
 from app.models.studio import (
     Chapter,
     ChapterStatus,
@@ -21,7 +21,7 @@ from app.models.studio import (
 )
 
 
-class _FakeStudioDB:
+class _FakeStudioDB(FakeSessionInfoMixin):
     """最小 Studio DB 替身：仅覆盖项目/章节/镜头接口测试所需行为。"""
 
     def __init__(self) -> None:
@@ -99,6 +99,7 @@ def _seed_project(db: _FakeStudioDB, project_id: str = "proj-1") -> Project:
         progress=10,
         stats={},
         owner_id=TEST_USER_ID,
+        tenant_id=TEST_TENANT_ID,
     )
     obj.created_at = now
     obj.updated_at = now

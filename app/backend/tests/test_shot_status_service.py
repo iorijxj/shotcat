@@ -57,6 +57,9 @@ from app.schemas.studio.shots import (
 from app.services.studio import mark_shot_generating, recompute_shot_status
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -68,6 +71,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 async def _seed_graph(db: AsyncSession) -> Shot:
     project = Project(
         id="project-1",
+        tenant_id=TENANT_ID,
         name="项目一",
         description="",
         style=ProjectStyle.real_people_city,
@@ -577,6 +581,7 @@ async def test_create_project_asset_link_marks_matching_prop_candidate_as_linked
             Prop(
                 id="prop-1",
                 project_id="project-1",
+                tenant_id=TENANT_ID,
                 name="银斧头",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -618,6 +623,7 @@ async def test_delete_project_asset_link_marks_matching_prop_candidate_back_to_p
             Prop(
                 id="prop-1",
                 project_id="project-1",
+                tenant_id=TENANT_ID,
                 name="银斧头",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -680,6 +686,7 @@ async def test_update_shot_detail_scene_marks_matching_scene_candidate_as_linked
             Scene(
                 id="scene-1",
                 project_id="project-1",
+                tenant_id=TENANT_ID,
                 name="河边",
                 description="",
                 style=ProjectStyle.real_people_city,
@@ -736,6 +743,7 @@ async def test_update_shot_detail_scene_change_marks_old_candidate_back_to_pendi
                 Scene(
                     id="scene-1",
                     project_id="project-1",
+                    tenant_id=TENANT_ID,
                     name="河边",
                     description="",
                     style=ProjectStyle.real_people_city,
@@ -746,6 +754,7 @@ async def test_update_shot_detail_scene_change_marks_old_candidate_back_to_pendi
                 Scene(
                     id="scene-2",
                     project_id="project-1",
+                    tenant_id=TENANT_ID,
                     name="山洞",
                     description="",
                     style=ProjectStyle.real_people_city,
@@ -804,6 +813,7 @@ async def test_update_shot_detail_scene_clear_marks_old_candidate_back_to_pendin
             Scene(
                 id="scene-1",
                 project_id="project-1",
+                tenant_id=TENANT_ID,
                 name="河边",
                 description="",
                 style=ProjectStyle.real_people_city,

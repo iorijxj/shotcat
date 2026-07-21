@@ -7,9 +7,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_current_tenant, get_current_user, get_db
 from app.models.auth import User
 from app.models.studio import Chapter, Project, Shot
+from app.services.auth.tenants import TenantContext
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
 from app.services.auth.ownership import assert_project_owned, require_project_access_via_chapter
 from app.services.common import (
@@ -34,6 +35,7 @@ CHAPTER_ORDER_FIELDS = {"index", "title", "created_at", "updated_at", "storyboar
 async def list_chapters(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tenant: TenantContext = Depends(get_current_tenant),
     project_id: str | None = Query(None, description="按项目过滤"),
     q: str | None = Query(None, description="关键字，过滤 title/summary"),
     order: str | None = Query(None, description="排序字段"),
@@ -46,7 +48,7 @@ async def list_chapters(
         await assert_project_owned(db, project_id=project_id, current_user=current_user)
         stmt = stmt.where(Chapter.project_id == project_id)
     else:
-        owned_project_ids = select(Project.id).where(Project.owner_id == current_user.id)
+        owned_project_ids = select(Project.id).where(Project.tenant_id == tenant.tenant_id)
         stmt = stmt.where(Chapter.project_id.in_(owned_project_ids))
     stmt = apply_keyword_filter(stmt, q=q, fields=[Chapter.title, Chapter.summary])
     stmt = apply_order(

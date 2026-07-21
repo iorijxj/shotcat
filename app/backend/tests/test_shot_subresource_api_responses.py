@@ -28,10 +28,10 @@ from app.models.studio import (
     ShotStatus,
     VFXType,
 )
-from tests.conftest import TEST_USER_ID
+from tests.conftest import TEST_TENANT_ID, TEST_USER_ID, FakeSessionInfoMixin
 
 
-class _FakeShotSubresourceDB:
+class _FakeShotSubresourceDB(FakeSessionInfoMixin):
     """最小 DB 替身：仅覆盖镜头子资源接口测试所需行为。"""
 
     def __init__(self) -> None:
@@ -128,6 +128,7 @@ def _seed_project_and_shot(db: _FakeShotSubresourceDB) -> None:
         progress=0,
         stats={},
         owner_id=TEST_USER_ID,
+        tenant_id=TEST_TENANT_ID,
     )
     project.created_at = now
     project.updated_at = now

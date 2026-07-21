@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.dependencies import get_db
 from app.main import app
 from app.models.studio import Actor, Project, ProjectStyle, ProjectVisualStyle
-from tests.conftest import TEST_USER_ID
+from tests.conftest import TEST_TENANT_ID, TEST_USER_ID, FakeSessionInfoMixin
 
 
 class _FakeResult:
@@ -28,7 +28,7 @@ class _FakeResult:
         return self._rows[0] if self._rows else None
 
 
-class _FakeEntityDB:
+class _FakeEntityDB(FakeSessionInfoMixin):
     def __init__(self) -> None:
         self.actors: dict[str, Actor] = {}
         self.actor_images: list[object] = []
@@ -38,7 +38,7 @@ class _FakeEntityDB:
             return self.actors.get(entity_id)
         if model is Project:
             # 归属校验：actor 挂到属于 TEST_USER_ID 的项目上，让 assert_entity_owned 放行
-            return SimpleNamespace(id=entity_id, owner_id=TEST_USER_ID)
+            return SimpleNamespace(id=entity_id, owner_id=TEST_USER_ID, tenant_id=TEST_TENANT_ID)
         return None
 
     def add(self, obj: object) -> None:

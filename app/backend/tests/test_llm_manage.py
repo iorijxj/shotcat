@@ -19,6 +19,9 @@ from app.services.llm.manage import (
 )
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -31,6 +34,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 async def test_create_model_persists_with_non_default_flag() -> None:
     db, engine = await _build_session()
     async with db:
+        db.info["tenant_id"] = TENANT_ID
         await create_provider(
             db,
             body=ProviderCreate(
@@ -58,11 +62,12 @@ async def test_create_model_persists_with_non_default_flag() -> None:
 async def test_update_model_allows_regular_field_updates() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
         db.add(provider)
         db.add(
             Model(
                 id="m_text",
+                tenant_id=TENANT_ID,
                 name="gpt-4o-mini",
                 category=ModelCategoryKey.text,
                 provider_id="p1",
@@ -115,12 +120,12 @@ async def test_update_model_settings_persists_latest_values() -> None:
 async def test_list_models_paginated_returns_filtered_items() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
         db.add(provider)
         db.add_all(
             [
-                Model(id="m1", name="gpt-4o-mini", category=ModelCategoryKey.text, provider_id="p1"),
-                Model(id="m2", name="seedream", category=ModelCategoryKey.image, provider_id="p1"),
+                Model(id="m1", tenant_id=TENANT_ID, name="gpt-4o-mini", category=ModelCategoryKey.text, provider_id="p1"),
+                Model(id="m2", tenant_id=TENANT_ID, name="seedream", category=ModelCategoryKey.image, provider_id="p1"),
             ]
         )
         await db.commit()
@@ -135,7 +140,7 @@ async def test_list_models_paginated_returns_filtered_items() -> None:
             page=1,
             page_size=10,
             allow_fields={"created_at", "name"},
-            current_user_id="test-user",
+            tenant_id=TENANT_ID,
         )
 
         assert resp.data is not None
@@ -148,6 +153,7 @@ async def test_list_models_paginated_returns_filtered_items() -> None:
 async def test_create_model_rejects_unsupported_category_for_provider() -> None:
     db, engine = await _build_session()
     async with db:
+        db.info["tenant_id"] = TENANT_ID
         await create_provider(
             db,
             body=ProviderCreate(
@@ -178,6 +184,7 @@ async def test_create_model_rejects_unsupported_category_for_provider() -> None:
 async def test_update_model_rejects_switch_to_unsupported_provider_category_combo() -> None:
     db, engine = await _build_session()
     async with db:
+        db.info["tenant_id"] = TENANT_ID
         await create_provider(
             db,
             body=ProviderCreate(
@@ -223,6 +230,7 @@ async def test_update_model_rejects_switch_to_unsupported_provider_category_comb
 async def test_get_image_generation_options_uses_default_image_model_capability() -> None:
     db, engine = await _build_session()
     async with db:
+        db.info["tenant_id"] = TENANT_ID
         await create_provider(
             db,
             body=ProviderCreate(

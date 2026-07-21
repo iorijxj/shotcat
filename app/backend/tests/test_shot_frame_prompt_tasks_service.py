@@ -36,6 +36,9 @@ from app.services.film.shot_frame_prompt_tasks import (
 from app.services.studio.action_beats import infer_action_beat_sequence, pick_action_beat_for_frame
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -47,6 +50,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 async def _seed_shot_graph(db: AsyncSession) -> None:
     project = Project(
         id="p1",
+        tenant_id=TENANT_ID,
         name="项目一",
         description="",
         style=ProjectStyle.real_people_city,
@@ -60,6 +64,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     actor = Actor(
         id="actor-1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="演员甲",
         description="短发、冷峻",
         style=ProjectStyle.real_people_city,
@@ -68,6 +73,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     costume = Costume(
         id="costume-1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="黑色风衣",
         description="修身长款、利落",
         style=ProjectStyle.real_people_city,
@@ -76,6 +82,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     character = Character(
         id="char-1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="主角",
         description="克制、警惕，带着压迫感",
         style=ProjectStyle.real_people_city,
@@ -86,6 +93,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     scene = Scene(
         id="scene-1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="废弃走廊",
         description="昏暗、潮湿、狭长",
         style=ProjectStyle.real_people_city,
@@ -94,6 +102,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
     prop = Prop(
         id="prop-1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="手电筒",
         description="金属外壳，冷白光束",
         style=ProjectStyle.real_people_city,
@@ -170,6 +179,7 @@ async def _seed_shot_graph(db: AsyncSession) -> None:
 async def _seed_fear_reaction_shot_graph(db: AsyncSession) -> None:
     project = Project(
         id="fear-p1",
+        tenant_id=TENANT_ID,
         name="惊恐项目",
         description="",
         style=ProjectStyle.real_people_city,
@@ -316,6 +326,7 @@ async def test_build_run_args_requires_shot_detail() -> None:
     async with db:
         project = Project(
             id="p1",
+            tenant_id=TENANT_ID,
             name="项目一",
             description="",
             style=ProjectStyle.real_people_city,

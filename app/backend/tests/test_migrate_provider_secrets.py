@@ -16,6 +16,8 @@ from app.cli.migrate_provider_secrets import encrypt_all_providers
 from app.core.db import Base
 from app.models.llm import Provider
 
+TENANT_ID = "test-tenant"
+
 
 def test_migrate_encrypts_legacy_plaintext() -> None:
     engine = create_async_engine("sqlite+aiosqlite://")
@@ -26,8 +28,8 @@ def test_migrate_encrypts_legacy_plaintext() -> None:
             await conn.run_sync(Base.metadata.create_all)
         # ORM 建一个 provider（会加密），再用 raw SQL 把 api_key 改回明文，模拟"存量未加密"
         async with maker() as db:
-            db.add(Provider(id="p1", name="n", base_url="u", api_key="sk-x"))
-            db.add(Provider(id="p2", name="n2", base_url="u2"))  # 空密钥
+            db.add(Provider(id="p1", tenant_id=TENANT_ID, name="n", base_url="u", api_key="sk-x"))
+            db.add(Provider(id="p2", tenant_id=TENANT_ID, name="n2", base_url="u2"))  # 空密钥
             await db.commit()
             await db.execute(text("UPDATE providers SET api_key = 'sk-plaintext' WHERE id = 'p1'"))
             await db.commit()

@@ -21,6 +21,9 @@ from app.schemas.studio.cast import ShotCharacterLinkCreate
 from app.services.studio.shot_character_links import list_by_shot, upsert
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -32,6 +35,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 async def _seed_base_graph(db: AsyncSession) -> None:
     project = Project(
         id="p1",
+        tenant_id=TENANT_ID,
         name="项目一",
         description="",
         style=ProjectStyle.real_people_city,
@@ -39,6 +43,7 @@ async def _seed_base_graph(db: AsyncSession) -> None:
     )
     other_project = Project(
         id="p2",
+        tenant_id=TENANT_ID,
         name="项目二",
         description="",
         style=ProjectStyle.real_people_city,
@@ -49,6 +54,7 @@ async def _seed_base_graph(db: AsyncSession) -> None:
     character_1 = Character(
         id="char1",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="角色一",
         description="",
         style=ProjectStyle.real_people_city,
@@ -57,6 +63,7 @@ async def _seed_base_graph(db: AsyncSession) -> None:
     character_2 = Character(
         id="char2",
         project_id="p1",
+        tenant_id=TENANT_ID,
         name="角色二",
         description="",
         style=ProjectStyle.real_people_city,
@@ -65,6 +72,7 @@ async def _seed_base_graph(db: AsyncSession) -> None:
     foreign_character = Character(
         id="char3",
         project_id="p2",
+        tenant_id=TENANT_ID,
         name="跨项目角色",
         description="",
         style=ProjectStyle.real_people_city,

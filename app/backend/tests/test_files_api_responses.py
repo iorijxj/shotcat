@@ -13,9 +13,10 @@ from app.dependencies import get_db
 from app.main import app
 from app.models.studio import FileItem
 from app.models.types import FileType
+from tests.conftest import FakeSessionInfoMixin
 
 
-class _DummyDB:
+class _DummyDB(FakeSessionInfoMixin):
     async def get(self, *_args, **_kwargs):
         return None
 

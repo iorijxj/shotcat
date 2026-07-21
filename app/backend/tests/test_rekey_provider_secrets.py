@@ -19,6 +19,8 @@ from app.core.db import Base
 from app.cli.rekey_provider_secrets import _convert, rekey_providers
 from app.models.llm import Provider
 
+TENANT_ID = "test-tenant"
+
 
 def test_convert_reencrypts_old_to_new() -> None:
     old_f = Fernet(Fernet.generate_key())
@@ -59,8 +61,17 @@ def test_rekey_providers_end_to_end(monkeypatch) -> None:
         # 用旧钥加密写入：monkeypatch settings 让 EncryptedSecret 走 old_key
         monkeypatch.setattr(secret_crypto.settings, "provider_secret_enc_key", old_key)
         async with maker() as db:
-            db.add(Provider(id="p1", name="prov1", base_url="https://x", api_key="sk-a", api_secret="sec-a"))
-            db.add(Provider(id="p2", name="prov2", base_url="https://y"))  # 空密钥
+            db.add(
+                Provider(
+                    id="p1",
+                    tenant_id=TENANT_ID,
+                    name="prov1",
+                    base_url="https://x",
+                    api_key="sk-a",
+                    api_secret="sec-a",
+                )
+            )
+            db.add(Provider(id="p2", tenant_id=TENANT_ID, name="prov2", base_url="https://y"))  # 空密钥
             await db.commit()
         async with maker() as db:
             changed = await rekey_providers(db, old_key=old_key, new_key=new_key)

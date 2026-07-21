@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 from app.dependencies import get_current_user, get_db
 from app.models.auth import User
 from app.models.llm import Model, ModelCategoryKey, ModelSettings, Provider, ProviderStatus
+from tests.conftest import FakeSessionInfoMixin
 from tests.support.llm_api_app import build_llm_only_app
 
 # 仅挂载 /api/v1/llm，避免导入 app.main 时连带加载 film 路由与 Celery。
 llm_app = build_llm_only_app()
 
 TEST_USER_ID = "tester"
+TEST_TENANT_ID = "test-tenant"
 
 
 @pytest.fixture
@@ -32,7 +34,7 @@ def client() -> Iterator[TestClient]:
         llm_app.dependency_overrides.pop(get_current_user, None)
 
 
-class _FakeLlmDB:
+class _FakeLlmDB(FakeSessionInfoMixin):
     """最小 DB 替身：仅覆盖 Provider 路由测试所需行为。"""
 
     def __init__(self) -> None:
@@ -85,6 +87,7 @@ def _seed_provider(db: _FakeLlmDB, provider_id: str = "p-1") -> Provider:
         description="说明",
         status=ProviderStatus.testing,
         created_by="tester",
+        tenant_id=TEST_TENANT_ID,
     )
     obj.created_at = now
     obj.updated_at = now
@@ -118,6 +121,7 @@ def _seed_image_model(db: _FakeLlmDB, *, provider_id: str = "p-image", model_id:
 
 def _override_db(db: _FakeLlmDB):
     async def _get_db() -> AsyncGenerator[_FakeLlmDB, None]:
+        db.info["tenant_id"] = TEST_TENANT_ID  # 该 app 无门禁，直接盖租户供 assert 读取
         yield db
 
     return _get_db

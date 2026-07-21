@@ -1,12 +1,11 @@
-"""四类资产归属校验回归测试（多租户 M2 P3-C）。
+"""四类资产归属校验回归测试（多租户 M2 P4c）。
 
-P3 清理掉 project_id 为空的历史公共资产后，assert_entity_owned 不再有
-"project_id 为空视为公共资产放行"分支：一律走项目归属校验。
+assert_entity_owned 隔离维度改为租户：当前租户取自 db.info["tenant_id"]，经聚合根
+（project）的 tenant_id 比较；跨租户或不存在一律 404。
 
 覆盖：
-- 越权访问他人项目下的资产 → 404
-- project_id 为空的资产 → 404（不再放行；正常数据已被 P3 清理掉）
-- 访问自己项目下的资产 → 返回对象
+- 同租户访问自己资产 → 返回对象
+- 跨租户访问他人资产 → 404（读过滤 + 显式比较双层）
 """
 
 from __future__ import annotations
@@ -20,28 +19,26 @@ from app.models.auth import User
 from app.models.studio import Project, Scene
 from app.models.types import ProjectStyle
 from app.services.auth.ownership import assert_entity_owned
-from tests.conftest import assets_project_id_nullable
 
 _STYLE = ProjectStyle.real_people_city
-USER_A = User(id="user-a", username="alice", password_hash="x")
-USER_B = User(id="user-b", username="bob", password_hash="x")
+TENANT_A = "tenant-a"
+TENANT_B = "tenant-b"
+USER_A = User(id="user-a", username="alice", password_hash="x", default_tenant_id=TENANT_A)
+USER_B = User(id="user-b", username="bob", password_hash="x", default_tenant_id=TENANT_B)
 
 
 async def _session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    with assets_project_id_nullable():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     return maker(), engine
 
 
-async def _seed_scene(db: AsyncSession, *, scene_id: str, project_id: str | None) -> None:
-    if project_id is not None:
-        db.add(User(id="user-a", username="alice", password_hash="x"))
-        db.add(Project(id=project_id, name="p", style=_STYLE, owner_id="user-a"))
-        await db.flush()
-    db.add(Scene(id=scene_id, name="s", style=_STYLE, project_id=project_id))
+async def _seed_scene(db: AsyncSession, *, scene_id: str, project_id: str, tenant_id: str) -> None:
+    db.add(Project(id=project_id, name="p", style=_STYLE, owner_id=None, tenant_id=tenant_id))
+    await db.flush()
+    db.add(Scene(id=scene_id, name="s", style=_STYLE, project_id=project_id, tenant_id=tenant_id))
     await db.flush()
 
 
@@ -49,30 +46,20 @@ async def _seed_scene(db: AsyncSession, *, scene_id: str, project_id: str | None
 async def test_owner_can_access_own_entity() -> None:
     db, engine = await _session()
     async with db:
-        await _seed_scene(db, scene_id="S1", project_id="P-A")
+        await _seed_scene(db, scene_id="S1", project_id="P-A", tenant_id=TENANT_A)
+        db.info["tenant_id"] = TENANT_A
         obj = await assert_entity_owned(db, entity_type="scene", entity_id="S1", current_user=USER_A)
         assert obj.id == "S1"
     await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_cross_user_entity_access_is_404() -> None:
+async def test_cross_tenant_entity_access_is_404() -> None:
     db, engine = await _session()
     async with db:
-        await _seed_scene(db, scene_id="S1", project_id="P-A")
+        await _seed_scene(db, scene_id="S1", project_id="P-A", tenant_id=TENANT_A)
+        db.info["tenant_id"] = TENANT_B
         with pytest.raises(HTTPException) as exc:
             await assert_entity_owned(db, entity_type="scene", entity_id="S1", current_user=USER_B)
-        assert exc.value.status_code == 404
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_null_project_entity_is_404_not_public() -> None:
-    """P3 后不再放行 project_id 为空的资产（历史公共资产已被清理）。"""
-    db, engine = await _session()
-    async with db:
-        await _seed_scene(db, scene_id="S1", project_id=None)
-        with pytest.raises(HTTPException) as exc:
-            await assert_entity_owned(db, entity_type="scene", entity_id="S1", current_user=USER_A)
         assert exc.value.status_code == 404
     await engine.dispose()

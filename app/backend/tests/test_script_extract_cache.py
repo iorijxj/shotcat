@@ -11,7 +11,7 @@ from app.services.script_extraction_cache import (
     build_script_extract_cache_key,
     clear_script_extract_cache,
 )
-from tests.conftest import TEST_USER_ID, AlwaysOwnedGetMixin
+from tests.conftest import TEST_TENANT_ID, TEST_USER_ID, AlwaysOwnedGetMixin
 
 _FAKE_USER = User(id=TEST_USER_ID, username="test", password_hash="x")
 
@@ -46,6 +46,7 @@ async def test_extract_script_uses_cache_by_default(monkeypatch):
     clear_script_extract_cache()
     calls: list[str] = []
     db = _FakeDB()
+    db.info["tenant_id"] = TEST_TENANT_ID  # 直接调 route，手动盖租户上下文
 
     class _FakeAgent:
         def __init__(self, _llm):
@@ -83,6 +84,7 @@ async def test_extract_script_refresh_cache_forces_recompute(monkeypatch):
     clear_script_extract_cache()
     calls: list[str] = []
     db = _FakeDB()
+    db.info["tenant_id"] = TEST_TENANT_ID  # 直接调 route，手动盖租户上下文
 
     class _FakeAgent:
         def __init__(self, _llm):

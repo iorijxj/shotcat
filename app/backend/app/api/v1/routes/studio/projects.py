@@ -10,9 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.utils import apply_keyword_filter, apply_order, paginate
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_current_tenant, get_current_user, get_db
 from app.models.auth import User
 from app.models.studio import Project
+from app.services.auth.tenants import TenantContext
 from app.models.types import ProjectStyle, ProjectVisualStyle
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, paginated_response, success_response
 from app.services.auth.ownership import require_project_owner
@@ -91,14 +92,14 @@ async def get_project_style_options(
 )
 async def list_projects(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    tenant: TenantContext = Depends(get_current_tenant),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
     order: str | None = Query(None, description="排序字段"),
     is_desc: bool = Query(False, description="是否倒序"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ) -> ApiResponse[PaginatedData[ProjectRead]]:
-    stmt = select(Project).where(Project.owner_id == current_user.id)
+    stmt = select(Project).where(Project.tenant_id == tenant.tenant_id)
     stmt = apply_keyword_filter(stmt, q=q, fields=[Project.name, Project.description])
     stmt = apply_order(stmt, model=Project, order=order, is_desc=is_desc, allow_fields=PROJECT_ORDER_FIELDS, default="created_at")
     items, total = await paginate(db, stmt=stmt, page=page, page_size=page_size)

@@ -23,11 +23,15 @@ from app.services.studio.shot_extraction_draft import build_script_extraction_dr
 from app.services.studio.shot_semantic_defaults import apply_shot_semantic_defaults_from_draft
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _seed_async_graph(db: AsyncSession) -> str:
     """构造最小项目/章节/镜头图，便于验证镜头语言默认值写回。"""
 
     project = Project(
         id="project-1",
+        tenant_id=TENANT_ID,
         name="项目一",
         style=ProjectStyle.guoman,
         visual_style=ProjectVisualStyle.anime,
@@ -51,6 +55,7 @@ def _seed_sync_graph(db: Session) -> str:
 
     project = Project(
         id="project-1",
+        tenant_id=TENANT_ID,
         name="项目一",
         style=ProjectStyle.guoman,
         visual_style=ProjectVisualStyle.anime,

@@ -16,6 +16,9 @@ from app.services.common import (
 )
 
 
+TENANT_ID = "test-tenant"
+
+
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -28,7 +31,7 @@ async def _build_session() -> tuple[AsyncSession, object]:
 async def test_require_entity_returns_existing_object() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
         await create_and_refresh(db, provider)
 
         found = await require_entity(db, Provider, "p1", detail="Provider not found")
@@ -62,7 +65,7 @@ async def test_require_optional_entity_returns_none_for_empty_id() -> None:
 async def test_ensure_not_exists_raises_on_duplicate() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
         await create_and_refresh(db, provider)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -77,7 +80,7 @@ async def test_ensure_not_exists_raises_on_duplicate() -> None:
 async def test_patch_model_updates_fields_in_memory() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
         await create_and_refresh(db, provider)
 
         patch_model(provider, {"name": "OpenAI Updated", "description": "new desc"})
@@ -91,8 +94,8 @@ async def test_patch_model_updates_fields_in_memory() -> None:
 async def test_delete_if_exists_is_idempotent() -> None:
     db, engine = await _build_session()
     async with db:
-        provider = Provider(id="p1", name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
-        model = Model(id="m1", name="gpt-4o-mini", category=ModelCategoryKey.text, provider_id="p1")
+        provider = Provider(id="p1", tenant_id=TENANT_ID, name="OpenAI", base_url="https://api.openai.com/v1", api_key="k")
+        model = Model(id="m1", tenant_id=TENANT_ID, name="gpt-4o-mini", category=ModelCategoryKey.text, provider_id="p1")
         await create_and_refresh(db, provider)
         await create_and_refresh(db, model)
 

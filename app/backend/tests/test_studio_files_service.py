@@ -17,6 +17,8 @@ from app.models.studio import (
 from app.schemas.studio.files import FileUpdate
 from app.services.studio.files import get_file_detail, list_files_paginated, update_file_meta
 
+TENANT_ID = "test-tenant"
+
 
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -33,6 +35,7 @@ async def _seed_scope_graph(db: AsyncSession) -> None:
         description="",
         style=ProjectStyle.real_people_city,
         visual_style=ProjectVisualStyle.live_action,
+        tenant_id=TENANT_ID,
     )
     chapter = Chapter(id="c1", project_id="p1", index=1, title="第一章")
     shot = Shot(id="s1", chapter_id="c1", index=1, title="镜头一")

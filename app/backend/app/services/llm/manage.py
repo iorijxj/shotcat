@@ -54,10 +54,10 @@ async def list_providers_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
-    current_user_id: str,
+    tenant_id: str,
 ) -> ApiResponse[PaginatedData[ProviderRead]]:
-    """分页查询供应商。created_by 为空（迁移期公共资源）或等于当前用户的才可见。"""
-    stmt = select(Provider).where(Provider.created_by.in_(["", current_user_id]))
+    """分页查询供应商：仅当前租户的可见（多租户 M2 P4c，每租户各配一套）。"""
+    stmt = select(Provider).where(Provider.tenant_id == tenant_id)
     stmt = apply_keyword_filter(stmt, q=q, fields=[Provider.name, Provider.description])
     stmt = apply_order(
         stmt,
@@ -148,11 +148,10 @@ async def list_models_paginated(
     page: int,
     page_size: int,
     allow_fields: set[str],
-    current_user_id: str,
+    tenant_id: str,
 ) -> ApiResponse[PaginatedData[ModelRead]]:
-    """分页查询模型。provider_id 未指定时，限定为当前用户可见（含公共）的供应商下的模型。"""
-    owned_provider_ids = select(Provider.id).where(Provider.created_by.in_(["", current_user_id]))
-    stmt = select(Model).where(Model.provider_id.in_(owned_provider_ids))
+    """分页查询模型：仅当前租户的可见（Model 亦为带 tenant_id 的根实体）。"""
+    stmt = select(Model).where(Model.tenant_id == tenant_id)
     if provider_id is not None:
         stmt = stmt.where(Model.provider_id == provider_id)
     if category is not None:

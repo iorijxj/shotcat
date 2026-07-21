@@ -23,6 +23,8 @@ from app.services.film.generated_video import run_video_generation_task
 from app.services.film.shot_frame_prompt_tasks import run_shot_frame_prompt_task
 from app.services.studio.image_task_runner import run_image_generation_task
 
+TENANT_ID = "test-tenant"
+
 
 @pytest.mark.asyncio
 async def test_run_video_generation_task_marks_cancelled_before_execute(monkeypatch, tmp_path) -> None:
@@ -152,6 +154,7 @@ async def test_run_shot_frame_prompt_task_persists_debug_context(monkeypatch, tm
                     description="",
                     style=ProjectStyle.real_people_city,
                     visual_style=ProjectVisualStyle.live_action,
+                    tenant_id=TENANT_ID,
                 ),
                 Chapter(id="chapter-1", project_id="project-1", index=1, title="第一章"),
                 Shot(id="shot-1", chapter_id="chapter-1", index=1, title="镜头一", script_excerpt="主角回头。"),
@@ -240,6 +243,7 @@ async def test_run_shot_frame_prompt_task_retries_when_result_contains_mapping_t
                     description="",
                     style=ProjectStyle.real_people_city,
                     visual_style=ProjectVisualStyle.live_action,
+                    tenant_id=TENANT_ID,
                 ),
                 Chapter(id="chapter-1", project_id="project-1", index=1, title="第一章"),
                 Shot(id="shot-1", chapter_id="chapter-1", index=1, title="镜头一", script_excerpt="主角回头。"),

@@ -20,6 +20,8 @@ from app.models.studio import (
 )
 from app.services.studio.asset_export import list_project_asset_export_items
 
+TENANT_ID = "test-tenant"
+
 
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -37,10 +39,34 @@ async def test_asset_export_uses_type_directories_and_current_asset_names() -> N
         visual_style = ProjectVisualStyle.live_action
         db.add_all(
             [
-                Project(id="p1", name="校园故事", description="", style=style, visual_style=visual_style),
-                Character(id="char_1", project_id="p1", name="小雨", description="", style=style, visual_style=visual_style),
-                Scene(id="scene_1", project_id="p1", name="教学楼/走廊", description="", style=style, visual_style=visual_style),
-                Prop(id="prop_1", project_id="p1", name="旧笔记本", description="", style=style, visual_style=visual_style),
+                Project(id="p1", tenant_id=TENANT_ID, name="校园故事", description="", style=style, visual_style=visual_style),
+                Character(
+                    id="char_1",
+                    tenant_id=TENANT_ID,
+                    project_id="p1",
+                    name="小雨",
+                    description="",
+                    style=style,
+                    visual_style=visual_style,
+                ),
+                Scene(
+                    id="scene_1",
+                    tenant_id=TENANT_ID,
+                    project_id="p1",
+                    name="教学楼/走廊",
+                    description="",
+                    style=style,
+                    visual_style=visual_style,
+                ),
+                Prop(
+                    id="prop_1",
+                    tenant_id=TENANT_ID,
+                    project_id="p1",
+                    name="旧笔记本",
+                    description="",
+                    style=style,
+                    visual_style=visual_style,
+                ),
                 FileItem(id="f1", type=FileType.image, name="旧名", thumbnail="", tags=[], storage_key="generated/char.webp"),
                 FileItem(id="f2", type=FileType.image, name="旧名", thumbnail="", tags=[], storage_key="generated/scene.png"),
                 FileItem(id="f3", type=FileType.image, name="旧名", thumbnail="", tags=[], storage_key="generated/prop.png"),

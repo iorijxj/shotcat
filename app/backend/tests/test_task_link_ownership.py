@@ -1,8 +1,7 @@
-"""阶段四 4.1 跨用户越权回归测试：GenerationTaskLink 任务链接系统的多态归属校验。
+"""跨租户越权回归测试：GenerationTaskLink 任务链接系统的多态归属校验（多租户 P4c）。
 
-用户 A 的任务/任务关联，用户 B 必须查不到、改不了、删不掉。P3 起 project_id 为空的
-历史资产不再视为公共资产（已清理），这类反查一律 404。用真实内存 SQLite（同
-test_project_ownership.py 的模式），让归属反查走真实 SQL。
+租户 A 的任务/任务关联，租户 B 必须查不到、改不了、删不掉。归属反查经聚合根
+（project/scene）的 tenant_id，走真实 SQL + session 级读过滤。用真实内存 SQLite。
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models.auth  # noqa: F401  # 确保 metadata 注册
 import app.models.studio  # noqa: F401
 from app.core.db import Base
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_current_tenant, get_current_user, get_db
 from app.main import app
 from app.models.auth import User
 from app.models.studio import (
@@ -33,16 +32,19 @@ from app.models.studio import (
 from app.models.task import GenerationDeliveryMode, GenerationTask, GenerationTaskStatus
 from app.models.task_links import GenerationTaskLink, GenerationTaskLinkStatus
 from app.models.types import ShotFrameType
-from tests.conftest import assets_project_id_nullable
+from app.services.auth.tenants import TenantContext
 
-USER_A = User(id="user-a", username="alice", password_hash="x")
-USER_B = User(id="user-b", username="bob", password_hash="x")
+TENANT_A = "tenant-a"
+TENANT_B = "tenant-b"
+USER_A = User(id="user-a", username="alice", password_hash="x", default_tenant_id=TENANT_A)
+USER_B = User(id="user-b", username="bob", password_hash="x", default_tenant_id=TENANT_B)
 
 
-def _project(project_id: str, owner_id: str) -> Project:
+def _project(project_id: str, tenant_id: str, owner_id: str | None = None) -> Project:
     return Project(
         id=project_id,
         owner_id=owner_id,
+        tenant_id=tenant_id,
         name="项目",
         description="",
         style=ProjectStyle.real_people_city,
@@ -80,7 +82,7 @@ def _shot(shot_id: str, chapter_id: str) -> Shot:
     )
 
 
-def _scene(scene_id: str, project_id: str | None) -> Scene:
+def _scene(scene_id: str, project_id: str, tenant_id: str) -> Scene:
     return Scene(
         id=scene_id,
         name="场景",
@@ -90,6 +92,7 @@ def _scene(scene_id: str, project_id: str | None) -> Scene:
         tags=[],
         visual_style=ProjectVisualStyle.live_action,
         project_id=project_id,
+        tenant_id=tenant_id,
     )
 
 
@@ -130,9 +133,8 @@ class _Harness:
 
     def seed(self, *objs: object) -> None:
         async def _run() -> None:
-            with assets_project_id_nullable():
-                async with self._engine.begin() as conn:
-                    await conn.run_sync(Base.metadata.create_all)
+            async with self._engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
             self._maker = async_sessionmaker(self._engine, expire_on_commit=False)
             async with self._maker() as session:
                 for obj in objs:
@@ -141,18 +143,23 @@ class _Harness:
 
         asyncio.run(_run())
 
-    def request_as(self, user: User) -> TestClient:
+    def request_as(self, user: User, tenant_id: str) -> TestClient:
         maker = self._maker
 
         async def _get_db():
             async with maker() as session:
+                session.info["tenant_id"] = tenant_id  # 盖租户：读过滤 + assert 都读它
                 yield session
 
         async def _get_current_user() -> User:
             return user
 
+        async def _get_current_tenant() -> TenantContext:
+            return TenantContext(tenant_id=tenant_id, role="owner", user_id=user.id)
+
         app.dependency_overrides[get_db] = _get_db
         app.dependency_overrides[get_current_user] = _get_current_user
+        app.dependency_overrides[get_current_tenant] = _get_current_tenant
         return TestClient(app)
 
     def close(self) -> None:
@@ -166,13 +173,13 @@ class _Harness:
 def test_user_b_cannot_get_task_status_via_chapter_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -181,13 +188,13 @@ def test_user_b_cannot_get_task_status_via_chapter_link() -> None:
 def test_user_a_can_get_own_task_status_via_chapter_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_A).get("/api/v1/film/tasks/task-a/status")
+        resp = h.request_as(USER_A, TENANT_A).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp.status_code == 200
@@ -197,14 +204,14 @@ def test_user_a_can_get_own_task_status_via_chapter_link() -> None:
 def test_user_b_cannot_get_task_result_via_shot_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _shot("shot-a", "ch-a"),
         _task("task-a"),
         _link(1, "task-a", "video", "shot-a"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/result")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/tasks/task-a/result")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -213,14 +220,14 @@ def test_user_b_cannot_get_task_result_via_shot_link() -> None:
 def test_user_b_cannot_cancel_task_via_shot_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _shot("shot-a", "ch-a"),
         _task("task-a"),
         _link(1, "task-a", "shot_first_frame_prompt", "shot-a"),
     )
     try:
-        resp = h.request_as(USER_B).post("/api/v1/film/tasks/task-a/cancel", json={})
+        resp = h.request_as(USER_B, TENANT_B).post("/api/v1/film/tasks/task-a/cancel", json={})
     finally:
         h.close()
     assert resp.status_code == 404
@@ -231,7 +238,7 @@ def test_task_without_any_link_is_forbidden() -> None:
     h = _Harness()
     h.seed(_task("task-orphan"))
     try:
-        resp = h.request_as(USER_A).get("/api/v1/film/tasks/task-orphan/status")
+        resp = h.request_as(USER_A, TENANT_A).get("/api/v1/film/tasks/task-orphan/status")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -241,44 +248,27 @@ def test_unknown_relation_type_is_forbidden() -> None:
     h = _Harness()
     h.seed(_task("task-a"), _link(1, "task-a", "some_unknown_type", "whatever"))
     try:
-        resp = h.request_as(USER_A).get("/api/v1/film/tasks/task-a/status")
+        resp = h.request_as(USER_A, TENANT_A).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp.status_code == 404
 
 
-# --- 公共资产 vs 归属资产（image 系反查）---
-
-
-def test_null_project_scene_image_task_not_visible() -> None:
-    """P3 起 project_id 为空不再视为公共资产（历史公共资产已清理）：
-    这类 scene image 反查任务对任何用户都不可见，返回 404。"""
-    h = _Harness()
-    h.seed(
-        _scene("scene-pub", None),
-        _scene_image(1, "scene-pub"),
-        _task("task-a"),
-        _link(1, "task-a", "scene_image", "1"),
-    )
-    try:
-        resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
-    finally:
-        h.close()
-    assert resp.status_code == 404
+# --- image 系反查的跨租户隔离 ---
 
 
 def test_owned_scene_image_task_hidden_from_others() -> None:
-    """scene 归属 A 的项目时，B 看不到。"""
+    """scene 归属租户 A 时，租户 B 看不到。"""
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
-        _scene("scene-a", "proj-a"),
+        _project("proj-a", TENANT_A),
+        _scene("scene-a", "proj-a", TENANT_A),
         _scene_image(1, "scene-a"),
         _task("task-a"),
         _link(1, "task-a", "scene_image", "1"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -287,7 +277,7 @@ def test_owned_scene_image_task_hidden_from_others() -> None:
 def test_shot_frame_image_link_ownership() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _shot("shot-a", "ch-a"),
         _shot_frame_image(1, "shot-a"),
@@ -295,7 +285,7 @@ def test_shot_frame_image_link_ownership() -> None:
         _link(1, "task-a", "shot_frame_image", "1"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -305,13 +295,13 @@ def test_chapter_or_project_relation_type_via_project() -> None:
     """relation_entity_id 是 project_id（consistency_check 走 chapter-or-project 分支）。"""
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _task("task-a"),
         _link(1, "task-a", "consistency_check", "proj-a"),
     )
     try:
-        resp_b = h.request_as(USER_B).get("/api/v1/film/tasks/task-a/status")
-        resp_a = h.request_as(USER_A).get("/api/v1/film/tasks/task-a/status")
+        resp_b = h.request_as(USER_B, TENANT_B).get("/api/v1/film/tasks/task-a/status")
+        resp_a = h.request_as(USER_A, TENANT_A).get("/api/v1/film/tasks/task-a/status")
     finally:
         h.close()
     assert resp_b.status_code == 404
@@ -324,13 +314,13 @@ def test_chapter_or_project_relation_type_via_project() -> None:
 def test_user_b_cannot_get_user_a_task_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/task-links/1")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/task-links/1")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -339,14 +329,14 @@ def test_user_b_cannot_get_user_a_task_link() -> None:
 def test_user_b_cannot_delete_user_a_task_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_B).delete("/api/v1/film/task-links/1")
-        verify = h.request_as(USER_A).get("/api/v1/film/task-links/1")
+        resp = h.request_as(USER_B, TENANT_B).delete("/api/v1/film/task-links/1")
+        verify = h.request_as(USER_A, TENANT_A).get("/api/v1/film/task-links/1")
     finally:
         h.close()
     assert resp.status_code == 404
@@ -356,13 +346,13 @@ def test_user_b_cannot_delete_user_a_task_link() -> None:
 def test_user_b_cannot_update_user_a_task_link() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_B).patch("/api/v1/film/task-links/1", json={"status": "accepted"})
+        resp = h.request_as(USER_B, TENANT_B).patch("/api/v1/film/task-links/1", json={"status": "accepted"})
     finally:
         h.close()
     assert resp.status_code == 404
@@ -371,9 +361,9 @@ def test_user_b_cannot_update_user_a_task_link() -> None:
 def test_create_task_link_to_others_entity_forbidden() -> None:
     """B 不能把任务关联到 A 的章节。"""
     h = _Harness()
-    h.seed(_project("proj-a", USER_A.id), _chapter("ch-a", "proj-a"), _task("task-a"))
+    h.seed(_project("proj-a", TENANT_A), _chapter("ch-a", "proj-a"), _task("task-a"))
     try:
-        resp = h.request_as(USER_B).post(
+        resp = h.request_as(USER_B, TENANT_B).post(
             "/api/v1/film/task-links",
             json={
                 "task_id": "task-a",
@@ -390,13 +380,13 @@ def test_create_task_link_to_others_entity_forbidden() -> None:
 def test_adopt_task_link_ownership() -> None:
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
+        _project("proj-a", TENANT_A),
         _chapter("ch-a", "proj-a"),
         _task("task-a"),
         _link(1, "task-a", "chapter_division", "ch-a"),
     )
     try:
-        resp = h.request_as(USER_B).patch(
+        resp = h.request_as(USER_B, TENANT_B).patch(
             "/api/v1/film/task-links/adopt",
             json={"task_id": "task-a", "chapter_id": "ch-a"},
         )
@@ -409,8 +399,8 @@ def test_list_task_links_filters_out_others() -> None:
     """列表页内过滤：B 只看到自己的关联。"""
     h = _Harness()
     h.seed(
-        _project("proj-a", USER_A.id),
-        _project("proj-b", USER_B.id),
+        _project("proj-a", TENANT_A),
+        _project("proj-b", TENANT_B),
         _chapter("ch-a", "proj-a"),
         _chapter("ch-b", "proj-b"),
         _task("task-a"),
@@ -419,7 +409,7 @@ def test_list_task_links_filters_out_others() -> None:
         _link(2, "task-b", "chapter_division", "ch-b"),
     )
     try:
-        resp = h.request_as(USER_B).get("/api/v1/film/task-links")
+        resp = h.request_as(USER_B, TENANT_B).get("/api/v1/film/task-links")
     finally:
         h.close()
     assert resp.status_code == 200

@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.orm import DeclarativeBase, Session, with_loader_criteria
+from sqlalchemy.orm.session import ORMExecuteState
 
 from app.config import settings
 
@@ -128,6 +129,35 @@ def _bind_worker_tenant_on_begin(session: Session, _transaction: object, _connec
     tenant_id = _worker_tenant_ctx.get()
     if tenant_id is not None:
         session.info["tenant_id"] = tenant_id
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _apply_tenant_read_filter(orm_execute_state: ORMExecuteState) -> None:
+    """租户读过滤（多租户 M2 P4c）：session 有租户上下文时，自动给所有
+    TenantScopedMixin 查询注入 tenant_id == tid，含 join/懒加载的别名。
+
+    仅作用于 SELECT，跳过列刷新（column_load）与关系加载（relationship_load）——
+    这是 SQLAlchemy 官方推荐的守卫，避免与既有 join 语句冲突；子实体不带该 mixin，
+    经根到达即可。开发者忘写 where 也默认安全。
+    """
+    if (
+        not orm_execute_state.is_select
+        or orm_execute_state.is_column_load
+        or orm_execute_state.is_relationship_load
+    ):
+        return
+    tenant_id = orm_execute_state.session.info.get("tenant_id")
+    if tenant_id is None:
+        return
+    from app.models.base import TenantScopedMixin
+
+    orm_execute_state.statement = orm_execute_state.statement.options(
+        with_loader_criteria(
+            TenantScopedMixin,
+            lambda cls: cls.tenant_id == tenant_id,
+            include_aliases=True,
+        )
+    )
 
 
 @event.listens_for(Session, "before_flush")

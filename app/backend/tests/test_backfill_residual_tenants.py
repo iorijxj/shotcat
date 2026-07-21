@@ -16,6 +16,7 @@ from app.models.llm import Model, ModelCategoryKey, Provider
 from app.models.studio import Actor, Character, Costume, Project, Prop, Scene
 from app.models.tenant import SYSTEM_TENANT_ID, Tenant
 from app.models.types import ProjectStyle
+from tests.conftest import assets_project_id_nullable, root_tenant_id_nullable
 
 _STYLE = ProjectStyle.real_people_city
 
@@ -23,8 +24,9 @@ _STYLE = ProjectStyle.real_people_city
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    with assets_project_id_nullable(), root_tenant_id_nullable():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     return maker(), engine
 
 

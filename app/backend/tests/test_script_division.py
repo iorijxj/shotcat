@@ -21,6 +21,8 @@ from app.models.studio import (
 from app.schemas.skills.script_processing import ScriptDivisionResult, ShotDivision
 from app.services.studio.script_division import write_division_result_to_chapter
 
+TENANT_ID = "test-tenant"
+
 
 async def _build_session() -> tuple[AsyncSession, object]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
@@ -63,6 +65,7 @@ async def test_write_division_result_to_empty_chapter_creates_shots_and_details(
             description="",
             style=ProjectStyle.real_people_city,
             visual_style=ProjectVisualStyle.live_action,
+            tenant_id=TENANT_ID,
         )
         chapter = Chapter(id="c1", project_id="p1", index=1, title="第一章")
         db.add_all([project, chapter])
@@ -94,6 +97,7 @@ async def test_write_division_result_refuses_when_chapter_already_has_shots() ->
             description="",
             style=ProjectStyle.real_people_city,
             visual_style=ProjectVisualStyle.live_action,
+            tenant_id=TENANT_ID,
         )
         chapter = Chapter(id="c1", project_id="p1", index=1, title="第一章")
         existing_shot = Shot(id="s1", chapter_id="c1", index=1, title="已有镜头")

@@ -5,9 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_current_tenant, get_current_user, get_db
 from app.models.auth import User
 from app.models.llm import ModelCategoryKey
+from app.services.auth.tenants import TenantContext
 from app.schemas.common import ApiResponse, PaginatedData, created_response, empty_response, success_response
 from app.services.auth.ownership import assert_model_owned, assert_provider_owned
 from app.schemas.llm import (
@@ -58,7 +59,7 @@ MAX_PAGE_SIZE = 100
 )
 async def list_providers(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    tenant: TenantContext = Depends(get_current_tenant),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
     order: str | None = Query(None, description="排序字段：name, created_at, updated_at"),
     is_desc: bool = Query(False, description="是否倒序"),
@@ -73,7 +74,7 @@ async def list_providers(
         page=page,
         page_size=page_size,
         allow_fields=PROVIDER_ORDER_FIELDS,
-        current_user_id=current_user.id,
+        tenant_id=tenant.tenant_id,
     )
 
 
@@ -185,6 +186,7 @@ async def delete_provider(
 async def list_models(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    tenant: TenantContext = Depends(get_current_tenant),
     provider_id: str | None = Query(None, description="按供应商过滤"),
     category: ModelCategoryKey | None = Query(None, description="按模型类别过滤"),
     q: str | None = Query(None, description="关键字，过滤 name/description"),
@@ -205,7 +207,7 @@ async def list_models(
         page=page,
         page_size=page_size,
         allow_fields=MODEL_ORDER_FIELDS,
-        current_user_id=current_user.id,
+        tenant_id=tenant.tenant_id,
     )
 
 

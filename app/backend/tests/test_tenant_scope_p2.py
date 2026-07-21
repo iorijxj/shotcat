@@ -64,12 +64,17 @@ async def test_before_flush_rejects_mismatched_tenant() -> None:
 
 @pytest.mark.asyncio
 async def test_before_flush_noop_without_context() -> None:
+    """无租户上下文时 before_flush 不干预：显式给的 tenant_id 原样保留（不盖、不拒绝）。
+
+    P4c 起 tenant_id NOT NULL，无上下文且不显式给会撞约束——这是预期的新行为；
+    这里显式带 tenant_id 验证"无上下文不干预"的语义仍然成立。
+    """
     db, engine = await _build_session()
     async with db:
-        provider = _new_provider("p3")  # session.info 无 tenant_id
+        provider = _new_provider("p3", tenant_id="t-explicit")  # session.info 无 tenant_id
         db.add(provider)
         await db.flush()
-        assert provider.tenant_id is None  # 既有行为：不盖章
+        assert provider.tenant_id == "t-explicit"
     await engine.dispose()
 
 
