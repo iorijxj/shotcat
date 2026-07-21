@@ -1,6 +1,8 @@
 """SQLAlchemy 异步引擎与会话。"""
 
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -16,6 +18,26 @@ from app.config import settings
 
 class CrossTenantWriteError(RuntimeError):
     """向 session 租户上下文之外写入聚合根：不可能的越权写，直接拒绝。"""
+
+
+# 后台任务（Celery/local-thread）运行在请求之外，不经 get_current_tenant。
+# 用 contextvar 承载当前后台任务的租户，配合下方 after_begin 事件把 tenant_id
+# 盖进每个 session.info，使 before_flush 盖章与（P4c 的）读过滤在后台同样生效。
+# 请求路径不设该 contextvar（恒为 None），互不干扰。
+_worker_tenant_ctx: ContextVar[str | None] = ContextVar("worker_tenant_id", default=None)
+
+
+@contextmanager
+def worker_tenant_scope(tenant_id: str | None) -> Iterator[None]:
+    """在后台任务入口声明当前租户；tenant_id 为空时为 no-op（保持既有行为）。"""
+    if not tenant_id:
+        yield
+        return
+    token = _worker_tenant_ctx.set(tenant_id)
+    try:
+        yield
+    finally:
+        _worker_tenant_ctx.reset(token)
 
 
 def _build_engine() -> AsyncEngine:
@@ -94,6 +116,20 @@ class Base(DeclarativeBase):
     pass
 
 
+@event.listens_for(Session, "after_begin")
+def _bind_worker_tenant_on_begin(session: Session, _transaction: object, _connection: object) -> None:
+    """后台任务：事务开始时把 contextvar 里的租户盖进 session.info（多租户 M2 P4b）。
+
+    仅当 contextvar 有值且 session 尚未由请求路径（get_current_tenant）盖过时生效。
+    sync/async session 底层都是 Session，事件挂在 Session 类上两者都覆盖。
+    """
+    if session.info.get("tenant_id") is not None:
+        return
+    tenant_id = _worker_tenant_ctx.get()
+    if tenant_id is not None:
+        session.info["tenant_id"] = tenant_id
+
+
 @event.listens_for(Session, "before_flush")
 def _stamp_tenant_on_flush(session: Session, _flush_context: object, _instances: object) -> None:
     """聚合根写入盖章（多租户 M2 P2）。
@@ -105,7 +141,12 @@ def _stamp_tenant_on_flush(session: Session, _flush_context: object, _instances:
     """
     tenant_id = session.info.get("tenant_id")
     if tenant_id is None:
-        return
+        # after_begin 在同一次 flush 中晚于 before_flush 触发，写路径这里兜底
+        # 从 contextvar 取后台租户并回盖 session.info（幂等）。
+        tenant_id = _worker_tenant_ctx.get()
+        if tenant_id is None:
+            return
+        session.info["tenant_id"] = tenant_id
     from app.models.base import TenantScopedMixin
 
     for obj in session.new:

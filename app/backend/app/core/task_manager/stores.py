@@ -384,6 +384,12 @@ class SqlAlchemyTaskStore(TaskStore):
         self.db = db
 
     async def create(self, payload: dict[str, Any], mode: DeliveryMode, task_kind: str) -> TaskRecord:
+        # 请求 session 已由 get_current_tenant 盖好 tenant_id（P4b 透传管道）：
+        # 写进 payload，供后台 worker 入口盖回 session.info。无租户上下文时不写，
+        # 保持向后兼容（GenerationTask 是子实体，不带 tenant_id 列）。
+        tenant_id = self.db.info.get("tenant_id")
+        if tenant_id is not None and "tenant_id" not in payload:
+            payload = {**payload, "tenant_id": tenant_id}
         task_id = _new_id()
         row = GenerationTask(
             id=task_id,

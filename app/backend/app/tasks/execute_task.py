@@ -15,6 +15,7 @@ import uuid
 from celery.result import AsyncResult
 
 from app.core.celery_app import celery_app
+from app.core.db import worker_tenant_scope
 from app.core.db_sync import sync_session_maker
 from app.models.task import GenerationTask
 from app.services.worker.task_registry import task_executor_registry
@@ -78,6 +79,9 @@ def run_task_celery(task_id: str) -> None:
         row = db.get(GenerationTask, task_id)
         if row is None:
             return
-        task_kind = (row.task_kind or "").strip() or str((row.payload or {}).get("task_kind") or "").strip()
+        payload = row.payload or {}
+        task_kind = (row.task_kind or "").strip() or str(payload.get("task_kind") or "").strip()
+        tenant_id = payload.get("tenant_id")
     executor = task_executor_registry.resolve(task_kind)
-    executor.run(task_id)
+    with worker_tenant_scope(tenant_id):
+        executor.run(task_id)
