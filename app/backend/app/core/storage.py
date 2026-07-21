@@ -65,6 +65,11 @@ def _normalize_key(key: str) -> str:
 
 
 def _build_public_url(key: str) -> str:
+    """构造对象的直连 URL——仅供 local-storage dev 模式及内部调试字段使用。
+
+    生产 S3 bucket 已私有化（M4 对象存储访问加固），资产访问一律走后端代理
+    /api/v1/studio/files/{id}/download；本函数返回值不应作为对外可下载链接下发。
+    """
     key = _normalize_key(key)
     if is_local_storage_enabled():
         return f"{LOCAL_STORAGE_PUBLIC_BASE_URL}/{key}"
@@ -87,7 +92,9 @@ def init_storage() -> None:
     说明：
     - 若 bucket 已存在则直接返回；
     - 若无权限/配置错误会抛出异常，便于在部署时尽早失败；
-    - 对于部分 S3 兼容服务（MinIO 等），CreateBucket 的参数可能不同，这里尽量兼容常见情形。
+    - 对于部分 S3 兼容服务（MinIO 等），CreateBucket 的参数可能不同，这里尽量兼容常见情形；
+    - 不设置任何匿名/公开读策略（M4 对象存储访问加固 D3）：bucket 的匿名读权限由运维在
+      RustFS/MinIO 侧关闭，不在此函数中授予，避免代码路径悄悄放开公开访问。
     """
     client = _build_s3_client()
     bucket = settings.s3_bucket_name
