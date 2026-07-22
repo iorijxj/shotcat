@@ -73,6 +73,7 @@ export interface ProviderSupported {
   default_base_url: string | null
   requires_api_key: boolean; requires_api_secret: boolean; is_experimental: boolean
 }
+export interface ConnectionTestResult { ok: boolean; message: string }
 export interface ModelSettings {
   id: number
   default_text_model_id: string | null
@@ -171,6 +172,8 @@ export const api = {
   llmUpdateModel: (id: string, body: any) => patch<any>(`/llm/models/${id}`, body),
   llmGetModelSettings: () => get<ModelSettings>('/llm/model-settings'),
   llmUpdateModelSettings: (body: any) => put<ModelSettings>('/llm/model-settings', body),
+  llmTestConnection: (body: { provider_key: string; base_url: string; api_key: string; category: string; model_name: string }) =>
+    post<ConnectionTestResult>('/llm/providers/test-connection', body),
   chapters: (projectId: string) =>
     get<Paged<Chapter>>(`/studio/chapters?project_id=${projectId}&page_size=100`).then((d) =>
       d.items.sort((a, b) => a.index - b.index),
@@ -392,14 +395,14 @@ export const api = {
     }
   },
 
-  // —— pipeline 文本三步(视觉词典/镜头分镜/视听单元)，走 bridge/pipeline_server(:5280) ——
+  // —— pipeline 文本三步(视觉词典/镜头分镜/视听单元)，走 bridge/pipeline_server(:5281) ——
   // 服务没起时代理返回空/HTML，r.json() 会抛晦涩的 "Unexpected end of JSON input"，统一转成人话
   async _pipelineJson(url: string, init?: RequestInit): Promise<any> {
     let r: Response
     try {
       r = await fetch(url, init)
     } catch {
-      throw new Error('pipeline 服务连不上（bridge/pipeline_server.py 未启动？端口 5280）')
+      throw new Error('pipeline 服务连不上（bridge/pipeline_server.py 未启动？端口 5281）')
     }
     try {
       return await r.json()
@@ -413,6 +416,13 @@ export const api = {
     }).then((j) => {
       if (!j.job_id) throw new Error(j.error || 'pipeline 启动失败(服务未起?)')
       return j.job_id as string
+    }),
+  // 把当前 LLM 配置同步给 bridge 独立脚本(extract-setup 等)：写 bridge/.custom_* 文件
+  syncBridgeConfig: (body: { base_url: string; api_key: string; model: string }) =>
+    api._pipelineJson('/pipeline/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then((j) => {
+      if (!j.ok) throw new Error(j.error || '同步失败')
     }),
   async pollPipeline(jobId: string, tries = 200, isCancelled?: () => boolean): Promise<{ status: string; log: string; error: string }> {
     for (let i = 0; i < tries; i++) {

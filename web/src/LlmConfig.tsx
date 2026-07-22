@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type ProviderSupported } from './lib/api'
+import { api, type ConnectionTestResult, type ProviderSupported } from './lib/api'
 import { currentUserId } from './lib/auth'
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -20,6 +20,10 @@ export default function LlmConfig() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
+  const [testing, setTesting] = useState<Record<string, boolean>>({})
+  const [testResults, setTestResults] = useState<Record<string, ConnectionTestResult>>({})
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -37,7 +41,45 @@ export default function LlmConfig() {
     setModelNames({})
     setErr('')
     setOk('')
+    setTestResults({})
   }, [providerKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function testConnection(cat: string) {
+    if (!current) return
+    const modelName = (modelNames[cat] || '').trim()
+    if (!modelName) return
+    setTesting((t) => ({ ...t, [cat]: true }))
+    setTestResults((r) => ({ ...r, [cat]: undefined as any }))
+    try {
+      const result = await api.llmTestConnection({
+        provider_key: current.key,
+        base_url: baseUrl.trim(),
+        api_key: apiKey.trim(),
+        category: cat,
+        model_name: modelName,
+      })
+      setTestResults((r) => ({ ...r, [cat]: result }))
+    } catch (e: any) {
+      setTestResults((r) => ({ ...r, [cat]: { ok: false, message: e?.message || '测试请求失败' } }))
+    } finally {
+      setTesting((t) => ({ ...t, [cat]: false }))
+    }
+  }
+
+  async function syncBridge() {
+    const modelName = (modelNames.text || '').trim()
+    if (!baseUrl.trim() || !apiKey.trim() || !modelName) return
+    setSyncing(true)
+    setSyncMsg('')
+    try {
+      await api.syncBridgeConfig({ base_url: baseUrl.trim(), api_key: apiKey.trim(), model: modelName })
+      setSyncMsg('✓ 已同步到 bridge')
+    } catch (e: any) {
+      setSyncMsg(`✗ ${e?.message || '同步失败'}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   async function submit() {
     if (!current) return
@@ -115,12 +157,32 @@ export default function LlmConfig() {
             <label className="fld"><span>Base URL</span>
               <input value={baseUrl} placeholder="https://..." onChange={(e) => setBaseUrl(e.target.value)} />
             </label>
-            {current?.supported_categories.map((cat) => (
-              <label className="fld" key={cat}><span>{CATEGORY_LABEL[cat] || cat}</span>
-                <input value={modelNames[cat] || ''} placeholder="不需要就留空"
-                  onChange={(e) => setModelNames({ ...modelNames, [cat]: e.target.value })} />
-              </label>
-            ))}
+            {current?.supported_categories.map((cat) => {
+              const testResult = testResults[cat]
+              return (
+                <label className="fld" key={cat}><span>{CATEGORY_LABEL[cat] || cat}</span>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input style={{ flex: 1 }} value={modelNames[cat] || ''} placeholder="不需要就留空"
+                      onChange={(e) => { setModelNames({ ...modelNames, [cat]: e.target.value }); setTestResults((r) => ({ ...r, [cat]: undefined as any })) }} />
+                    <button type="button" className="btn ghost" disabled={!(modelNames[cat] || '').trim() || testing[cat]}
+                      onClick={() => testConnection(cat)}>{testing[cat] ? '测试中…' : '测试连接'}</button>
+                  </div>
+                  {testResult && (
+                    <div className={testResult.ok ? 'ok' : 'fld-err'} style={{ fontSize: 12, marginTop: 4 }}>
+                      {testResult.ok ? '✓ ' : '✗ '}{testResult.message}
+                    </div>
+                  )}
+                  {cat === 'text' && (
+                    <>
+                      <button type="button" className="btn ghost" style={{ marginTop: 6 }}
+                        disabled={!baseUrl.trim() || !apiKey.trim() || !(modelNames[cat] || '').trim() || syncing}
+                        onClick={syncBridge}>{syncing ? '同步中…' : '同步到 bridge（供「从剧本抽取设定」使用）'}</button>
+                      {syncMsg && <div className={syncMsg.startsWith('✓') ? 'ok' : 'fld-err'} style={{ fontSize: 12, marginTop: 4 }}>{syncMsg}</div>}
+                    </>
+                  )}
+                </label>
+              )
+            })}
             {err && <div className="fld-err">{err}</div>}
             {ok && <div className="fld" style={{ marginBottom: 10 }}><span className="ok">{ok}</span></div>}
             <div className="modal-foot">
