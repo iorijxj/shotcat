@@ -1,17 +1,24 @@
 """FastAPI 依赖注入。"""
 
+import uuid
 from collections.abc import AsyncGenerator
 
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from langchain_core.language_models.chat_models import BaseChatModel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.db import async_session_maker
 from app.models.auth import User
-from app.services.auth.security import decode_access_token
-from app.services.auth.tenants import TenantContext, resolve_active_tenant
+from app.services.auth.security import decode_access_token, hash_password
+from app.services.auth.tenants import TenantContext, provision_personal_tenant, resolve_active_tenant
 from app.services.llm.resolver import build_default_text_llm
+
+# 登录鉴权临时旁路（AUTH_DISABLED=true）用的固定开发态用户名，自动创建/复用。
+_DEV_BYPASS_USERNAME = "dev-local"
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -27,11 +34,40 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+async def _get_or_create_dev_bypass_user(db: AsyncSession) -> User:
+    """AUTH_DISABLED=true 时使用的固定开发态用户，首次访问自动创建，之后复用。
+
+    和 cli/create_user.py 建号一样需要 provision_personal_tenant，否则
+    get_current_tenant 会因为没有 membership 而 403（当前用户没有可用租户）。
+    """
+    stmt = select(User).where(User.username == _DEV_BYPASS_USERNAME)
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if user is not None:
+        return user
+    user = User(id=str(uuid.uuid4()), username=_DEV_BYPASS_USERNAME, password_hash=hash_password(uuid.uuid4().hex))
+    db.add(user)
+    try:
+        await db.flush()
+        await provision_personal_tenant(db, user=user)
+    except IntegrityError:
+        # 首次并发请求同时建号，退回去复用先建成功的那条。
+        await db.rollback()
+        user = (await db.execute(stmt)).scalar_one_or_none()
+        if user is None:
+            raise
+    return user
+
+
 async def get_current_user(
     authorization: str | None = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """解析 Authorization: Bearer <token>，返回当前登录用户；缺失/无效/过期一律 401。"""
+    """解析 Authorization: Bearer <token>，返回当前登录用户；缺失/无效/过期一律 401。
+
+    AUTH_DISABLED=true 时临时旁路（内部开发用，待接入平台统一认证后移除）。
+    """
+    if settings.auth_disabled:
+        return await _get_or_create_dev_bypass_user(db)
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = authorization.split(" ", 1)[1].strip()

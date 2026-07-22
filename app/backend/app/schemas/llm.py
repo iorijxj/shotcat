@@ -71,6 +71,23 @@ class ProviderSupportedRead(BaseModel):
     is_experimental: bool = Field(False, description="是否实验性供应商")
 
 
+class ProviderConnectionTestRequest(BaseModel):
+    """连通性测试请求：直接传当前表单值，不要求先落库 Provider/Model。"""
+
+    provider_key: str = Field(..., description="供应商稳定键，如 openai/aliyun_bailian/volcengine")
+    base_url: str = Field("", description="Base URL；留空则回落供应商内置默认值")
+    api_key: str = Field("", description="API Key")
+    category: ModelCategoryKey = Field(..., description="测试类别：text/image/video")
+    model_name: str = Field(..., description="模型名称")
+
+
+class ProviderConnectionTestResult(BaseModel):
+    """连通性测试结果。"""
+
+    ok: bool = Field(..., description="是否连通成功")
+    message: str = Field(..., description="结果说明；失败时为简要错误信息")
+
+
 class VideoGenerationOptionsRead(BaseModel):
     """当前默认视频模型对应的生成参数选项。"""
 

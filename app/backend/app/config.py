@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # 洪泛上限而非严格 per-IP，故默认给得较宽，按真实并发登录量调整。
     login_rate_limit_per_minute: int = 60
 
+    # 登录鉴权临时旁路（内部开发用，待接入 平台 统一认证后移除）：置 true 时
+    # get_current_user 跳过 Authorization 校验，直接返回固定开发态用户（自动创建/复用）。
+    # 安全默认为 False；任何公网/多人环境必须保持 false，否则等同关闭鉴权。
+    auth_disabled: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         s = (self.cors_origins or "").strip()

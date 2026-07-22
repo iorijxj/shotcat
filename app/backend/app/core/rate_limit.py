@@ -34,6 +34,7 @@ _GENERATION_PATH_PATTERNS = [
     re.compile(r"^/api/v1/studio/image-tasks/shot/[^/]+/frame-image-tasks$"),
     re.compile(r"^/api/v1/film/tasks/video$"),
     re.compile(r"^/api/v1/film/tasks/shot-frame-prompts$"),
+    re.compile(r"^/api/v1/llm/providers/test-connection$"),
 ]
 
 _LOGIN_PATH_PATTERN = re.compile(r"^/api/v1/auth/login$")

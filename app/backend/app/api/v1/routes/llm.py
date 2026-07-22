@@ -18,12 +18,15 @@ from app.schemas.llm import (
     ModelSettingsRead,
     ModelSettingsUpdate,
     ModelUpdate,
+    ProviderConnectionTestRequest,
+    ProviderConnectionTestResult,
     ProviderCreate,
     ProviderRead,
     ProviderSupportedRead,
     VideoGenerationOptionsRead,
     ProviderUpdate,
 )
+from app.services.llm.connectivity import test_provider_connection
 from app.services.llm.manage import (
     create_model as create_model_service,
     create_provider as create_provider_service,
@@ -88,6 +91,24 @@ async def list_supported_providers(
 ) -> ApiResponse[list[ProviderSupportedRead]]:
     items = list_supported_providers_service(category=category)
     return success_response(items)
+
+
+@router.post(
+    "/providers/test-connection",
+    response_model=ApiResponse[ProviderConnectionTestResult],
+    summary="测试供应商连通性（保存前手动核对，直接用表单值，不要求先落库）",
+)
+async def test_connection(
+    body: ProviderConnectionTestRequest,
+) -> ApiResponse[ProviderConnectionTestResult]:
+    result = await test_provider_connection(
+        provider_key=body.provider_key,
+        base_url=body.base_url,
+        api_key=body.api_key,
+        category=body.category,
+        model_name=body.model_name,
+    )
+    return success_response(ProviderConnectionTestResult(ok=result.ok, message=result.message))
 
 
 @router.get(
