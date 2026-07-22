@@ -21,6 +21,7 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 
 set "BACKEND_TITLE=shotcat-backend-test"
 set "WEB_TITLE=shotcat-web-test"
+set "CELERY_TITLE=shotcat-celery-test"
 
 echo [test] === shotcat test startup ^(full reinstall + recompile^) ===
 
@@ -92,6 +93,11 @@ popd
 
 echo [test] starting backend ^(uv run uvicorn --reload^) in window "%BACKEND_TITLE%"...
 start "%BACKEND_TITLE%" cmd /k "cd /d "%BACKEND_DIR%" && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+
+REM 同 run.bat：图片/视频生成任务靠 celery worker 消费 Redis 队列，
+REM 没它任务会一直卡着，前端等 5 分钟后自报"任务超时"。
+echo [test] starting celery worker in window "%CELERY_TITLE%"...
+start "%CELERY_TITLE%" cmd /k "cd /d "%BACKEND_DIR%" && uv run celery -A app.core.celery_app:celery_app worker -l info --pool=solo"
 
 echo [test] starting web/ workbench dev server ^(pnpm dev^) in window "%WEB_TITLE%"...
 start "%WEB_TITLE%" cmd /k "cd /d "%WEB_DIR%" && pnpm dev"

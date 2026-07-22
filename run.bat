@@ -21,6 +21,7 @@ set "COMPOSE_ENV=%COMPOSE_DIR%\.env"
 
 set "BACKEND_TITLE=shotcat-backend-run"
 set "WEB_TITLE=shotcat-web-run"
+set "CELERY_TITLE=shotcat-celery-run"
 
 echo [run] === shotcat quick startup ===
 
@@ -28,6 +29,13 @@ if not exist "%COMPOSE_ENV%" (
     echo [run] %COMPOSE_ENV% not found. Run install.bat first.
     goto :end
 )
+
+REM Without a persistent wsl.exe client handle, WSL2 can idle-shutdown between
+REM two separate wsl.exe invocations from this same script, taking
+REM mysql/redis/rustfs and their port forwarding down with it mid-run (same
+REM problem install.bat/server.bat already guard against with this fix).
+taskkill /FI "WINDOWTITLE eq shotcat-wsl-keepalive" /T /F >nul 2>&1
+start "shotcat-wsl-keepalive" /min wsl -- sleep infinity
 
 REM Docker Desktop is not allowed here; infra runs via Docker Engine inside
 REM WSL2 (set up by install.bat). Translate this project's Windows path to
@@ -72,6 +80,15 @@ goto wait_mysql
 
 echo [run] starting backend ^(uv run uvicorn --reload^) in window "%BACKEND_TITLE%"...
 start "%BACKEND_TITLE%" cmd /k "cd /d "%BACKEND_DIR%" && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+
+REM Celery worker consumes image/video generation tasks queued to Redis --
+REM without it those tasks sit in the queue forever and the frontend just
+REM times out waiting. Runs natively (uv run) like backend, not the
+REM containerized celery-worker service, so it shares the same venv/.env.
+REM Windows has no os.fork, so the default prefork pool doesn't work here --
+REM use --pool=solo (fine for dev-scale concurrency).
+echo [run] starting celery worker in window "%CELERY_TITLE%"...
+start "%CELERY_TITLE%" cmd /k "cd /d "%BACKEND_DIR%" && uv run celery -A app.core.celery_app:celery_app worker -l info --pool=solo"
 
 echo [run] starting web/ workbench dev server ^(pnpm dev^) in window "%WEB_TITLE%"...
 start "%WEB_TITLE%" cmd /k "cd /d "%WEB_DIR%" && pnpm dev"
