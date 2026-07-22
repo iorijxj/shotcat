@@ -95,7 +95,7 @@ cd bridge
 python pipeline_server.py
 ```
 
-访问：<http://127.0.0.1:5280>
+访问：<http://127.0.0.1:5281>
 
 桥接优先读取 `GLM_API_KEY` 或 `bridge/.glm_key`；未配置时会读取 `OPENAI_API_KEY` 或 `bridge/.openai_key`。不要将真实 Key 提交到仓库。
 

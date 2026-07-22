@@ -2,13 +2,17 @@
 """Pipeline 服务：把文本三步(视觉词典/镜头分镜/视听单元)包成 HTTP，供前端一键调用。
 - POST /pipeline/<step>  body={"pid":"...","model":"glm-4.6"}  → {job_id}
 - GET  /pipeline/jobs/<job_id>  → {status: running|done|error, log, error}
+- POST /pipeline/config  body={"base_url":"...","api_key":"...","model":"..."}
+  → 写 bridge/.custom_base_url / .custom_key / .custom_model，供 glm.py 的自定义
+  OpenAI 兼容渠道分支读取（web/ 的「LLM 配置」弹窗「同步到 bridge」按钮调用）。
 step ∈ visual-dict | shot-breakdown | unit-gen
 纯标准库；作业串行(一次一个)，线程后台跑，stdout 收进 log。
-启动：python pipeline_server.py  (默认 5280)
+启动：python pipeline_server.py  (默认 5281)
 """
 from __future__ import annotations
 import io, json, threading, uuid, contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import glm, visual_dict, shot_breakdown, unit_gen, extract_setup
 
@@ -72,17 +76,31 @@ class H(BaseHTTPRequestHandler):
             return self._send(200 if job else 404, job or {"error": "job not found"})
         self._send(404, {"error": "not found"})
 
+    def _save_config(self, body):
+        base_url = (body.get("base_url") or "").strip()
+        api_key = (body.get("api_key") or "").strip()
+        model = (body.get("model") or "").strip()
+        if not base_url or not api_key or not model:
+            return self._send(400, {"error": "base_url/api_key/model 均为必填"})
+        root = Path(__file__).parent
+        (root / ".custom_base_url").write_text(base_url, encoding="utf-8")
+        (root / ".custom_key").write_text(api_key, encoding="utf-8")
+        (root / ".custom_model").write_text(model, encoding="utf-8")
+        self._send(200, {"ok": True})
+
     def do_POST(self):
         if not self.path.startswith("/pipeline/"):
             return self._send(404, {"error": "not found"})
         step = self.path.split("/")[-1]
-        if step not in STEPS:
-            return self._send(400, {"error": f"unknown step {step}"})
         length = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(length) or "{}") if length else {}
         except (json.JSONDecodeError, ValueError):
             return self._send(400, {"error": "invalid JSON body"})
+        if step == "config":
+            return self._save_config(body)
+        if step not in STEPS:
+            return self._send(400, {"error": f"unknown step {step}"})
         pid = body.get("pid")
         if not pid:
             return self._send(400, {"error": "pid required"})
@@ -97,5 +115,5 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("pipeline server on http://127.0.0.1:5280  (steps: %s)" % ", ".join(STEPS))
-    ThreadingHTTPServer(("127.0.0.1", 5280), H).serve_forever()
+    print("pipeline server on http://127.0.0.1:5281  (steps: %s)" % ", ".join(STEPS))
+    ThreadingHTTPServer(("127.0.0.1", 5281), H).serve_forever()

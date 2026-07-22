@@ -16,6 +16,9 @@ node_modules/
 *.tsbuildinfo
 bridge/.glm_key
 bridge/.openai_key
+bridge/.custom_key
+bridge/.custom_base_url
+bridge/.custom_model
 bridge/visual-dict-*.json
 
 # app/ 后端内核（已并入本仓库，作为项目自有代码维护）

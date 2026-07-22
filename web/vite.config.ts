@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5273,
     proxy: {
       '/api': { target: 'http://localhost:8000', changeOrigin: true },
-      '/pipeline': { target: 'http://localhost:5280', changeOrigin: true },
+      '/pipeline': { target: 'http://localhost:5281', changeOrigin: true },
     },
   },
 })

@@ -1,7 +1,10 @@
 """OpenAI-compatible chat client used by bridge scripts.
 
-GLM is used when GLM_API_KEY or .glm_key exists. If not, the bridge falls
-back to OpenAI through OPENAI_API_KEY or .openai_key.
+GLM is used when GLM_API_KEY or .glm_key exists. Otherwise, if a custom
+OpenAI-compatible endpoint is configured (CUSTOM_API_BASE_URL/CUSTOM_API_KEY
+or .custom_base_url/.custom_key, plus a real model name via
+CUSTOM_API_MODEL/.custom_model), that is used. Last, the bridge falls back
+to official OpenAI through OPENAI_API_KEY or .openai_key.
 """
 from __future__ import annotations
 
@@ -32,13 +35,24 @@ def _client_config(model: str) -> tuple[str, str, str, str]:
     if key:
         return "glm", GLM_BASE, key, model
 
+    key = (os.environ.get("CUSTOM_API_KEY") or "").strip().lstrip("\ufeff") or _read_key_file(".custom_key")
+    if key:
+        base_url = (os.environ.get("CUSTOM_API_BASE_URL") or "").strip() or _read_key_file(".custom_base_url")
+        if not base_url:
+            raise SystemExit("\u5df2\u8bbe\u7f6e CUSTOM_API_KEY/.custom_key\uff0c\u4f46\u7f3a\u5c11 CUSTOM_API_BASE_URL / bridge/.custom_base_url")
+        custom_model = (os.environ.get("CUSTOM_API_MODEL") or "").strip() or _read_key_file(".custom_model")
+        if not custom_model:
+            raise SystemExit("\u5df2\u8bbe\u7f6e CUSTOM_API_KEY/.custom_key\uff0c\u4f46\u7f3a\u5c11 CUSTOM_API_MODEL / bridge/.custom_model")
+        return "custom", base_url.rstrip("/"), key, custom_model
+
     key = (os.environ.get("OPENAI_API_KEY") or "").strip().lstrip("\ufeff") or _read_key_file(".openai_key")
     if key:
         resolved_model = OPENAI_FALLBACK_MODEL if model.startswith("glm-") else model
         return "openai", OPENAI_BASE, key, resolved_model
 
     raise SystemExit(
-        "缺少模型 key：请设置 GLM_API_KEY/OPENAI_API_KEY，或写 bridge/.glm_key / bridge/.openai_key"
+        "缺少模型 key：请设置 GLM_API_KEY/CUSTOM_API_KEY/OPENAI_API_KEY，"
+        "或写 bridge/.glm_key / bridge/.custom_key(+.custom_base_url+.custom_model) / bridge/.openai_key"
     )
 
 

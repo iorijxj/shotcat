@@ -248,7 +248,7 @@ REM uploads through this site's /api/* proxy, so both entrances need it.
 >>"%CADDYFILE%" echo             max_size 10MB
 >>"%CADDYFILE%" echo         }
 >>"%CADDYFILE%" echo         reverse_proxy /api/* !CONNECT_ADDR!:!SERVER_BACKEND_INTERNAL_PORT!
->>"%CADDYFILE%" echo         reverse_proxy /pipeline/* 127.0.0.1:5280
+>>"%CADDYFILE%" echo         reverse_proxy /pipeline/* 127.0.0.1:5281
 >>"%CADDYFILE%" echo         try_files {path} /index.html
 >>"%CADDYFILE%" echo         file_server
 >>"%CADDYFILE%" echo     }
@@ -279,7 +279,7 @@ taskkill /FI "WINDOWTITLE eq shotcat-caddy" /T /F >nul 2>&1
 start "shotcat-caddy" /min "%ROOT%tools\caddy.exe" run --config "%CADDYFILE%" --adapter caddyfile
 
 REM web/'s "lock visual dictionary / shot breakdown / narration unit"
-REM features call bridge/pipeline_server.py, fixed on 127.0.0.1:5280.
+REM features call bridge/pipeline_server.py, fixed on 127.0.0.1:5281.
 where python >nul 2>&1
 if errorlevel 1 (
     echo [server][WARN] python not found on PATH -- skipping bridge/pipeline_server.py.

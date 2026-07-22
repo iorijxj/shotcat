@@ -14,7 +14,7 @@ pnpm dev      # → http://localhost:5273
 
 # ③ pipeline 服务（前端「抽取设定/锁定视觉词典/AI拆镜头/视听单元」按钮全靠它）
 cd D:/CC/projects/duanju-studio/bridge
-python pipeline_server.py    # → 127.0.0.1:5280（不起的话前端会提示 pipeline 服务未启动）
+python pipeline_server.py    # → 127.0.0.1:5281（不起的话前端会提示 pipeline 服务未启动）
 ```
 - 前端：http://localhost:5273 ｜ 后端 API：http://localhost:8000 ｜ 旧 Jellyfish 前端：http://localhost:7788（后台页用）
 
